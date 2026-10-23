@@ -1,0 +1,9 @@
+# local state (regenerable + sensitive)
+data/kb.json
+data/observations.db
+data/pending.jsonl
+data/decided.jsonl
+__pycache__/
+*.pyc
+.env
+*.local.json

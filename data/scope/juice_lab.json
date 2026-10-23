@@ -1,0 +1,30 @@
+{
+  "name": "juice-shop-lab",
+  "in_scope": ["localhost", "127.0.0.1"],
+  "out_of_scope": ["*"],
+  "base_url": "http://localhost:3000",
+  "accounts": [
+    {
+      "label": "userA",
+      "email": "runner-a@test.local",
+      "password": "SuperSafe!123",
+      "register_path": "/api/Users",
+      "login_path": "/rest/user/login",
+      "token_field": "authentication.token"
+    },
+    {
+      "label": "userB",
+      "email": "runner-b@test.local",
+      "password": "SuperSafe!123",
+      "register_path": "/api/Users",
+      "login_path": "/rest/user/login",
+      "token_field": "authentication.token"
+    }
+  ],
+  "endpoints": [
+    {"m": "GET", "path": "/rest/basket/1", "marker": "admin@juice-sh.op"},
+    {"m": "GET", "path": "/api/Users/1", "marker": "admin@juice-sh.op"},
+    {"m": "GET", "path": "/api/Products/1", "marker": "Barista"},
+    {"m": "GET", "path": "/rest/track-orders", "marker": "\\d"}
+  ]
+}
