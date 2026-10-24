@@ -64,7 +64,12 @@ def test_openapi_marks_auth_required_and_keeps_templates(store):
     assert "{id}" in openapi[0]["url"]
 
 
-def test_cbh_requires_wildcard_scope(store):
+def test_cbh_requires_wildcard_scope(store, tmp_path, monkeypatch):
+    # the check must not depend on the host having a Claude-BugHunter checkout
+    fake_cbh = tmp_path / "cbh.py"
+    fake_cbh.write_text("", encoding="utf-8")
+    monkeypatch.setattr("bb.recon.CBH", fake_cbh)
+
     scope = Scope.from_entries("p", ["lab.test"])          # no wildcard
     client = ScopedClient(scope, base_url="http://lab.test/",
                           transport=httpx.MockTransport(lambda r: httpx.Response(200)),
