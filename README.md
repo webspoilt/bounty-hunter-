@@ -85,12 +85,12 @@ stored evidence.
 
 ### 3.1 Scope as a predicate
 
-A program is a pair of rule sets $R_{\text{in}}, R_{\text{out}}$. A rule $r$ either matches a
+A program is a pair of rule sets $R_{\mathrm{in}}, R_{\mathrm{out}}$. A rule $r$ either matches a
 resolved request URL $u$ — same host (and port, when specified), same path prefix for URL
 rules, or containment for CIDR rules — or it does not. The scope predicate is
 
 $$
-\operatorname{in}(u) \;=\; \Bigl(\exists\, r \in R_{\text{in}} : r \models u\Bigr) \;\wedge\; \neg\Bigl(\exists\, r \in R_{\text{out}} : r \models u\Bigr)
+\mathrm{in}(u) = \left(\exists r \in R_{\mathrm{in}} : r \models u\right) \wedge \neg\left(\exists r \in R_{\mathrm{out}} : r \models u\right)
 $$
 
 with two clarifications that matter in practice:
@@ -106,8 +106,8 @@ non-HTTP schemes — are refused rather than guessed at.
 
 | ID | Invariant | Enforced at |
 |---|---|---|
-| **I1** | $\forall u:\ \text{sent}(u) \Rightarrow \operatorname{in}(u)$ | `ScopedClient.request` — the only caller of `httpx.send` |
-| **I2** | $\forall f:\ \text{submitted}(f) \Rightarrow \text{approved\_by\_human}(f)$ | No submission function exists; `bb submit` prints a command |
+| **I1** | $\forall u: \mathrm{sent}(u) \Rightarrow \mathrm{in}(u)$ | `ScopedClient.request` — the only caller of `httpx.send` |
+| **I2** | $\forall f: \text{submitted}(f) \Rightarrow \text{approved by human}(f)$ | No submission function exists; `bb submit` prints a command |
 | **I3** | Credentials are redacted *before* persistence | `redact_headers` / `redact_body` at capture |
 
 The important design choice is that I1 holds on the **resolved** URL. `httpx` builds the request
@@ -194,7 +194,7 @@ response bodies, $\sigma$ a Jaccard similarity over JSON leaf values (or tokens)
 $i_A, i_B$ identity markers (email or JWT-derived id). With $\tau = 0.90$:
 
 $$
-F(o) \;=\; \bigl[\sigma(A(o), B(o)) \ge \tau\bigr] \,\wedge\, \bigl[i_A \in B(o)\bigr] \,\wedge\, \bigl[i_B \notin B(o)\bigr]
+F(o) = \left[\sigma(A(o), B(o)) \ge \tau\right] \wedge \left[i_A \in B(o)\right] \wedge \left[i_B \notin B(o)\right]
 $$
 
 A finding is emitted only when $F(o)$ holds. The negated terms are what turn a curiosity into a
