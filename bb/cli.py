@@ -393,6 +393,79 @@ def cmd_kb(args) -> int:
     return 1
 
 
+def cmd_audit(args) -> int:
+    from bb import audit
+
+    if args.action == "skill":
+        info = audit.skill_info()
+        if not info["exists"]:
+            print(f"skill not found at {info['dir']}")
+            print("re-vendor it from https://github.com/cloudflare/security-audit-skill")
+            return 1
+        print(f"skill dir: {info['dir']}")
+        print(f"commit:    {info['commit'] or 'unknown'}")
+        print(f"docs:      {len(info['docs'])} markdown files")
+        print(f"validators:{' ok' if all(info['validators'].values()) else ' MISSING'}"
+              f"   schema: {'ok' if info['schema'] else 'MISSING'}"
+              f"   node: {'ok' if info['node'] else 'not installed'}")
+        print("\nphases: reconnaissance -> coverage-led hunting -> candidate validation")
+        print("        -> structured output -> independent verification -> reporting")
+        print("\nuse it with a coding agent:")
+        print("  npx skills add https://github.com/cloudflare/security-audit-skill "
+              "--skill security-audit")
+        print(f"  or point the agent at {info['dir'] / 'SKILL.md'}")
+        print("  then ask: security audit <target> output to <dir>")
+        print("\nvalidate the artifacts it wrote:")
+        print("  bb audit validate --findings <dir>/findings.json "
+              "--ledger <dir>/coverage-ledger.json")
+        return 0
+
+    if args.action == "init":
+        result = audit.init_workspace(args.repo, out=args.out, profile=args.profile,
+                                      scope=args.scope, budget=args.budget,
+                                      allow_inside=args.allow_inside)
+        out: Path = result["out"]
+        meta = result["metadata"]
+        print(f"audit workspace: {out}")
+        print(f"profile: {meta['profile']}   source: {meta['source_ref']}")
+        print("files: " + ", ".join(result["files"]))
+        print("\nnext:")
+        print("  1. bb audit skill                         # how to load the skill")
+        print(f"  2. ask your agent: security audit {Path(args.repo).resolve()} "
+              f"output to {out}")
+        print(f"  3. bb audit validate --findings {out / 'findings.json'} "
+              f"--ledger {out / 'coverage-ledger.json'}")
+        return 0
+
+    if args.action == "validate":
+        if not args.findings and not args.ledger:
+            raise SystemExit("give --findings and/or --ledger")
+        failed = 0
+        for kind, path in (("findings", args.findings), ("ledger", args.ledger)):
+            if not path:
+                continue
+            try:
+                code, output = audit.validate(kind, path)
+            except Exception as exc:
+                print(f"{kind}: ERROR — {exc}")
+                failed += 1
+                continue
+            print(f"{kind}: {'PASS' if code == 0 else 'FAIL'} — {path}")
+            if output:
+                print(output)
+            if code != 0:
+                failed += 1
+        return 0 if failed == 0 else 1
+
+    if args.action == "ingest":
+        from bb.kb import KnowledgeBase
+        added = audit.ingest_skill(KnowledgeBase())
+        print(f"added {added} chunks from the vendored security-audit skill")
+        return 0
+
+    return 1
+
+
 def cmd_demo(args) -> int:
     from bb.demo import run
     run(llm=args.llm, budget=args.budget)
@@ -575,6 +648,26 @@ def build_parser() -> argparse.ArgumentParser:
     t = sub.add_parser("telegram", help="review queue from Telegram")
     t.add_argument("--push-only", action="store_true")
     t.set_defaults(func=cmd_telegram)
+
+    au = sub.add_parser("audit", help="source-code audit skill (Cloudflare, vendored)")
+    asub = au.add_subparsers(dest="action", required=True)
+    ai = asub.add_parser("init", help="scaffold the skill's run directory")
+    ai.add_argument("--repo", required=True, help="local source tree to audit")
+    ai.add_argument("--out", help="output directory (default: ~/security-audit-skill/<repo>/run-N)")
+    ai.add_argument("--profile", choices=["quick", "standard", "deep"], default="standard")
+    ai.add_argument("--scope", action="append", help="scope path inside the repo (repeatable)")
+    ai.add_argument("--budget", type=int, help="max agent invocations")
+    ai.add_argument("--allow-inside", action="store_true",
+                    help="permit an output directory inside the target (not recommended)")
+    ai.set_defaults(func=cmd_audit)
+    av = asub.add_parser("validate", help="run the vendored schema validators")
+    av.add_argument("--findings")
+    av.add_argument("--ledger")
+    av.set_defaults(func=cmd_audit)
+    asub.add_parser("skill", help="show the vendored skill and how to load it").set_defaults(
+        func=cmd_audit)
+    asub.add_parser("ingest", help="add the methodology to the knowledge base").set_defaults(
+        func=cmd_audit)
     return p
 
 

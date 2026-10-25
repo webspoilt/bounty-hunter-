@@ -29,6 +29,14 @@ def probe_all() -> list[dict]:
     out.append({"name": "cbh", "ok": CBH.exists(), "url": str(CBH),
                 "detail": "recon/report backend" if CBH.exists() else "not found (set CBH_HOME)"})
 
+    from bb.audit import skill_info
+    info = skill_info()
+    out.append({"name": "audit-skill", "ok": info["exists"] and info["schema"],
+                "url": str(info["dir"]),
+                "detail": (f"Cloudflare security-audit @ {info['commit'][:8] or 'unknown'}; "
+                           f"node {'ok' if info['node'] else 'missing'}; "
+                           f"{len(info['docs'])} docs")})
+
     ok = False
     detail = ARTEX_TOKEN or "no ARTEX_TOKEN"
     try:

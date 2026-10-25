@@ -33,6 +33,9 @@ PENTAGI_URL = os.environ.get("PENTAGI_URL", "https://127.0.0.1:8443")
 CBH_HOME = Path(os.environ.get("CBH_HOME", ROOT.parent / "Claude-BugHunter"))
 CBH = CBH_HOME / "scripts" / "cbh.py"
 
+# vendored Cloudflare security-audit skill (source-code audits; MIT, see NOTICE.md)
+AUDIT_SKILL = Path(os.environ.get("BB_AUDIT_SKILL", ROOT / "skills" / "security-audit"))
+
 CONTACT = os.environ.get("BB_CONTACT", "")
 USER_AGENT = f"bountybot/{__version__} (authorized bug-bounty testing" + (f"; {CONTACT}" if CONTACT else "") + ")"
 

@@ -6,7 +6,7 @@
 
 [![tests](https://img.shields.io/github/actions/workflow/status/webspoilt/bounty-hunter-/tests.yml?branch=main&style=flat-square&label=tests)](https://github.com/webspoilt/bounty-hunter-/actions/workflows/tests.yml)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?style=flat-square&logo=python&logoColor=white)
-![pytest](https://img.shields.io/badge/pytest-81%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-89%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
 [![scope](https://img.shields.io/badge/scope-deny--by--default-10b981?style=flat-square)](bb/scope.py)
 [![submission](https://img.shields.io/badge/submission-human--only-ef4444?style=flat-square)](bb/gate.py)
 ![deps](https://img.shields.io/badge/deps-httpx%20only-22d3ee?style=flat-square)
@@ -30,7 +30,7 @@ and stops before submission.</em>
 > not. **(iii)** Reports are generated from redacted evidence and are never submitted
 > automatically. On an instrumented OWASP Juice Shop lab, 10/10 adversarial scope-bypass inputs
 > are refused, a 53-request hunt recovers a high-confidence cross-account IDOR in 11.8 s, the
-> generated report passes an independent seven-question triage gate, and 81 tests run in ≈5 s
+> generated report passes an independent seven-question triage gate, and 89 tests run in ≈5 s
 > without network access.
 
 **Keywords:** bug bounty · broken object-level authorization · scope enforcement · evidence
@@ -67,6 +67,7 @@ stored evidence.
 | **C3** | Five further deterministic, read-only checks (unauthenticated access, CORS, exposed files, GraphQL introspection, open redirect) with signature matching to suppress status-code false positives. | [`bb/checks.py`](bb/checks.py) |
 | **C4** | Evidence capture with redaction at write time, an SQLite provenance store, and H1-ready report rendering with an LLM guard and an independent triage gate. | [`bb/redact.py`](bb/redact.py), [`bb/store.py`](bb/store.py), [`bb/report.py`](bb/report.py) |
 | **C5** | A UUID-addressed human approval queue with no code path that submits to a platform. | [`bb/gate.py`](bb/gate.py), [`bb/h1.py`](bb/h1.py) |
+| **C6** | A vendored source-audit contract (Cloudflare, MIT): six phases, JSON schema, and the upstream Node validators, kept separate from dynamic HTTP evidence. | [`skills/security-audit/`](skills/security-audit), [`bb/audit.py`](bb/audit.py) |
 
 ## 2 · At a glance
 
@@ -78,8 +79,9 @@ stored evidence.
 | **Evidence** | Every exchange stored redacted (headers, bodies), hashed, deduplicated per run |
 | **Reporting** | Deterministic H1 markdown; optional local-LLM polish with strict validation |
 | **Submission** | Manual. `bb submit` prints a curl payload and sends nothing |
+| **Source audit** | Companion Cloudflare skill (vendored, MIT): six phases, schema + Node validators |
 | **Stack** | Python 3.11+, `httpx`, SQLite, optional Ollama, optional Claude-BugHunter |
-| **Tests** | 81, no network, ≈5 s; CI on Python 3.11 and 3.12 |
+| **Tests** | 89, no network, ≈5 s; CI on Python 3.11 and 3.12 |
 
 ## 3 · Safety model
 
@@ -263,7 +265,7 @@ This is a lab evaluation, not a benchmark against live programs; see §9.
 
 | # | Experiment | Measurement | Result |
 |---|---|---|---|
-| **E1** | Unit/integration suite | 81 tests, no network | **81/81 pass**, 3.3–4.9 s |
+| **E1** | Unit/integration suite | 89 tests, no network | **89/89 pass**, 3.3–4.9 s |
 | **E2** | Scope predicate, adversarial inputs | 10 attacks + 4 controls | **10/10 denied, 4/4 allowed** |
 | **E3** | Dry-run planning | full hunt, zero packets | **29 requests planned, 0 sent** |
 | **E4** | Lab hunt, two roles | Juice Shop, rate 6 req/s | **53 requests, 64 endpoints, 11.8 s** |
@@ -356,6 +358,7 @@ If the API cannot expose scope (public programs), import a file:
 | `bb queue [--push]` / `bb decide ID --approve\|--reject` | human gate |
 | `bb hypothesize --program P` | precedents + grounded leads |
 | `bb kb stats\|query\|ingest` | corpus operations |
+| `bb audit init\|validate\|skill\|ingest` | source-code audit contract (vendored Cloudflare skill) |
 | `bb artex status\|push\|task` | dashboard bridge |
 | `bb submit --finding ID --team H` | print-only submission payload |
 | `bb telegram [--push-only]` | allow-listed review from a phone |
@@ -395,6 +398,37 @@ If the API cannot expose scope (public programs), import a file:
 Every integration is optional. Without Ollama the reports are deterministic; without cbh the
 recon is passive; without ARTEX nothing changes.
 
+### 8.1 Source-code audits (companion skill)
+
+`bb hunt` measures a deployed target; it cannot see the code. When you can read the source
+(your own service, an open-source program, a scope that includes a repository), the repo
+vendors Cloudflare's [security-audit skill](https://github.com/cloudflare/security-audit-skill)
+at commit `c1c8a8c1471069fb0e188eeaff69b8e8db6564a8` (MIT; see
+[`skills/security-audit/NOTICE.md`](skills/security-audit/NOTICE.md)). It runs a six-phase,
+coverage-led audit with independent verification and two machine-checkable artifacts:
+`findings.json` (against `report-schema.json`) and `coverage-ledger.json`.
+
+```powershell
+bb audit skill                       # location, commit, phases, install command
+bb audit init --repo ../service --out ~/audits/service --profile standard
+#   give the skill to Claude Code / DSH, then ask it:
+#   "security audit ../service output to ~/audits/service"
+bb audit validate --findings ~/audits/service/findings.json `
+                  --ledger   ~/audits/service/coverage-ledger.json
+bb audit ingest                      # optional: methodology into the KB
+```
+
+`bb audit init` refuses to write inside the target — the skill's write-isolation rule — and
+scaffolds `run-metadata.json`, `architecture.md`, and valid empty `findings.json` /
+`coverage-ledger.json`. `bb audit validate` runs the vendored validators: the untouched CLI
+on POSIX, and on Windows (where the CLI's `O_NOFOLLOW` hardening is unavailable) the same
+exported schema interpreter.
+
+The two evidence models are deliberately not merged: a `bb hunt` exchange cannot become a
+Cloudflare `confirmed` record, because that verdict requires a source trace (`file:line`) and
+independent source verification. Dynamic HTTP evidence stays in bb's report; source evidence
+stays in the skill's run directory.
+
 ## 9 · Limitations and responsible use
 
 * **Lab-only evidence.** The numbers in §6 come from Juice Shop. No live HackerOne program was
@@ -417,19 +451,20 @@ git clone https://github.com/webspoilt/bounty-hunter-.git
 cd bounty-hunter-
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-python -m pytest -q          # 81 passed, no network
+python -m pytest -q          # 89 passed, no network
 python -m bb integrations    # optional local stack
 ```
 
 Repository map:
 
 ```
-bb/            implementation (scope, http, checks, report, store, cli)
-tests/         81 pytest cases: no network, MockTransport for HTTP
+bb/            implementation (scope, http, checks, report, store, audit, cli)
+tests/         89 pytest cases: no network, MockTransport for HTTP
+skills/        vendored Cloudflare security-audit skill (MIT): docs, schema, validators
 assets/        banner
 data/          runtime state (gitignored): DB, scopes, reports, KB
 REVIEW.md      historical v1 review, kept for the record
-.github/       CI: Python 3.11 + 3.12
+.github/       CI: Python 3.11 + 3.12, Node for the audit validators
 ```
 
 Reproducing the evaluation: start Juice Shop on `:3000`, then `bb demo`; the seeds are fixed
@@ -449,6 +484,9 @@ sending traffic.
 5. **Calibration.** Measure precision/recall of the $\tau$ rule on a labelled set of historical
    authz reports.
 6. **Report evaluation.** Blind review of LLM-polished vs deterministic reports by triagers.
+7. **Source/dynamic correlation.** Link a runtime observation to the source unit that produced
+   it, so an audit's `confirmed` record and a `bb` exchange can cite each other without
+   weakening either evidence bar.
 
 ## References
 
@@ -460,6 +498,10 @@ sending traffic.
 6. *PentAGI* — autonomous penetration-testing platform. <https://github.com/vxcontrol/pentagi>
 7. Ollama. *Local LLM runtime*. <https://ollama.com/>
 8. *httpx* — Python HTTP client. <https://www.python-httpx.org/>
+9. Cloudflare. *security-audit-skill* — multi-phase source audit with machine-checkable
+   findings. <https://github.com/cloudflare/security-audit-skill>
+10. Cloudflare. *Build your own vulnerability harness*.
+    <https://blog.cloudflare.com/build-your-own-vulnerability-harness>
 
 ## Citation
 

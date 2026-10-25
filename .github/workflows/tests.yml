@@ -27,13 +27,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: install
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
       - name: cli smoke test
-        run: python -m bb --version
+        run: |
+          python -m bb --version
+          python -m bb audit skill
 
       - name: pytest
         run: python -m pytest -q
