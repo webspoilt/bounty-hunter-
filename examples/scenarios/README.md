@@ -9,6 +9,18 @@ bb scenario run --file examples/scenarios/idor-write.json \
   --program acme --accounts data/acme.accounts.json --allow-write
 ```
 
+## From a HAR
+
+Draft scenarios from authenticated browsing without writing them by hand:
+
+```bash
+bb scenario propose --har ~/Downloads/app.har --program acme
+```
+
+It clusters a captured create with later reads/mutations/deletes and writes drafts plus a
+`REVIEW.md` under `data/proposed/`. It never executes anything; the captured session is assumed
+to be the owner (A), so verify roles and redacted body values before running a draft.
+
 ## Steps
 
 | Field | Meaning |

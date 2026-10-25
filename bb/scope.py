@@ -275,7 +275,7 @@ class Scope:
 
     @classmethod
     def load(cls, path: str | Path) -> "Scope":
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
         scope = cls.from_entries(
             program=data.get("program", "unknown"),
             in_scope=data.get("in_scope") or [],

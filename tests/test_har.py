@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from bb.har import HarError, count_ids, import_har
+from bb.har import HarError, count_ids, import_har, load_har
 from bb.scope import Scope
 from bb.store import Store
 
@@ -97,3 +97,7 @@ def test_invalid_har_rejected(tmp_path):
     run_id = store.start_run("p")
     with pytest.raises(HarError):
         import_har(p, scope, store, run_id, log=lambda *_: None)
+
+    # a header-injection shaped URL is dropped by the shared loader, not written anywhere
+    weird = write_har(tmp_path, [entry("GET", "https://lab.test/a\nInjected: yes")])
+    assert load_har(weird) == []

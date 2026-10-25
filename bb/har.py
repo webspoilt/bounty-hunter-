@@ -4,6 +4,9 @@ The HAR is untrusted input. We cap its size, validate UTF-8, strip control chara
 scope-check every URL, redact credentials before persistence, and skip binary bodies.
 Import only records observations; it never replays them. Mutating requests belong in a
 scenario with `--allow-write`.
+
+`load_har` is the shared, side-effect-free parser used by both the importer and the
+scenario proposer.
 """
 from __future__ import annotations
 
@@ -11,11 +14,11 @@ import base64
 import binascii
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from bb.config import BODY_CAP
-from bb.http import ScopeViolation  # noqa: F401  (documented failure mode)
 from bb.models import Exchange
 from bb.redact import redact_body, redact_headers
 from bb.scope import Scope
@@ -32,6 +35,19 @@ ID_PARAM = re.compile(r"(^|[?&])(id|user_?id|uid|account_?id|order_?id|item_?id|
 
 class HarError(RuntimeError):
     pass
+
+
+@dataclass
+class HarEntry:
+    index: int
+    method: str
+    url: str
+    status: int
+    request_headers: dict[str, str]
+    request_body: str
+    response_headers: dict[str, str]
+    response_body: str
+    duration_ms: int
 
 
 def _clean(text: str) -> str:
@@ -92,7 +108,8 @@ def count_ids(url: str) -> bool:
     return bool(ID_PATH.search(parts.path or "/")) or bool(ID_PARAM.search(parts.query or ""))
 
 
-def import_har(path: str | Path, scope: Scope, store, run_id: str, log=print) -> dict:
+def load_har(path: str | Path) -> list[HarEntry]:
+    """Parse a HAR into redacted entries. No scope checks, no persistence, no network."""
     har_path = Path(path).expanduser().resolve()
     if not har_path.exists():
         raise HarError(f"HAR not found: {har_path}")
@@ -105,12 +122,40 @@ def import_har(path: str | Path, scope: Scope, store, run_id: str, log=print) ->
         doc = json.loads(text)
     except json.JSONDecodeError as exc:
         raise HarError(f"invalid HAR JSON: {exc}") from exc
-    entries = ((doc.get("log") or {}).get("entries")) if isinstance(doc, dict) else None
-    if not isinstance(entries, list):
+    raw_entries = ((doc.get("log") or {}).get("entries")) if isinstance(doc, dict) else None
+    if not isinstance(raw_entries, list):
         raise HarError("not a HAR file: missing log.entries")
-    if len(entries) > MAX_ENTRIES:
-        raise HarError(f"too many entries ({len(entries)}); limit is {MAX_ENTRIES}")
+    if len(raw_entries) > MAX_ENTRIES:
+        raise HarError(f"too many entries ({len(raw_entries)}); limit is {MAX_ENTRIES}")
 
+    entries: list[HarEntry] = []
+    for index, raw in enumerate(raw_entries):
+        if not isinstance(raw, dict):
+            continue
+        req = raw.get("request") or {}
+        url = _clean(str(req.get("url") or "")).strip()
+        if not url.startswith(("http://", "https://")) or re.search(r"[\s\x00-\x1f\x7f]", url):
+            continue
+        method = str(req.get("method") or "GET").upper()
+        if not re.fullmatch(r"[A-Z]{3,10}", method):
+            continue
+        body = ""
+        post = req.get("postData") or {}
+        if isinstance(post, dict) and isinstance(post.get("text"), str):
+            body = redact_body(_clean(post["text"]), cap=BODY_CAP)
+        resp = raw.get("response") or {}
+        entries.append(HarEntry(
+            index=index, method=method, url=url, status=_status(raw),
+            request_headers=_request_headers(req), request_body=body,
+            response_headers=redact_headers(_headers(resp.get("headers"))),
+            response_body=redact_body(_decode_body(resp.get("content") or {}), cap=BODY_CAP),
+            duration_ms=_duration(raw),
+        ))
+    return entries
+
+
+def import_har(path: str | Path, scope: Scope, store, run_id: str, log=print) -> dict:
+    entries = load_har(path)
     stats = {"entries": len(entries), "in_scope": 0, "denied": 0, "skipped": 0,
              "endpoints": 0, "id_endpoints": 0, "exchanges": 0, "hosts": {},
              "denied_hosts": {}}
@@ -118,59 +163,41 @@ def import_har(path: str | Path, scope: Scope, store, run_id: str, log=print) ->
     endpoints = []
 
     for entry in entries:
-        if not isinstance(entry, dict):
-            stats["skipped"] += 1
-            continue
-        req = entry.get("request") or {}
-        url = str(req.get("url") or "").strip()
-        method = str(req.get("method") or "GET").upper()
-        if not url or not url.startswith(("http://", "https://")):
-            stats["skipped"] += 1
-            continue
-        decision = scope.check(url)
-        host = decision.host or urlsplit(url).hostname or ""
+        decision = scope.check(entry.url)
+        host = decision.host or urlsplit(entry.url).hostname or ""
         if not decision.allowed:
             stats["denied"] += 1
             stats["denied_hosts"][host] = stats["denied_hosts"].get(host, 0) + 1
-            store.audit_scope(run_id, url, "DENY", decision.reason, host)
+            store.audit_scope(run_id, entry.url, "DENY", decision.reason, host)
             continue
 
-        store.audit_scope(run_id, url, "ALLOW", decision.reason, host)
+        store.audit_scope(run_id, entry.url, "ALLOW", decision.reason, host)
         stats["in_scope"] += 1
         stats["hosts"][host] = stats["hosts"].get(host, 0) + 1
 
-        req_body = ""
-        post = req.get("postData") or {}
-        if isinstance(post, dict) and isinstance(post.get("text"), str):
-            req_body = redact_body(_clean(post["text"]), cap=BODY_CAP)
-        resp = entry.get("response") or {}
-        resp_body = redact_body(_decode_body(resp.get("content") or {}), cap=BODY_CAP)
-
         ex = Exchange(
-            method=method, url=url, status=_status(entry),
-            request_headers=_request_headers(req),
-            request_body=req_body,
-            response_headers=redact_headers(_headers(resp.get("headers"))),
-            response_body=resp_body,
-            duration_ms=_duration(entry),
-            note="HAR import",
+            method=entry.method, url=entry.url, status=entry.status,
+            request_headers=entry.request_headers, request_body=entry.request_body,
+            response_headers=entry.response_headers, response_body=entry.response_body,
+            duration_ms=entry.duration_ms, note="HAR import",
         )
         if store.add_exchange(run_id, "har", ex):
             stats["exchanges"] += 1
 
-        key = (method, url)
+        key = (entry.method, entry.url)
         if key not in seen_endpoints:
             seen_endpoints.add(key)
-            params = sorted(parse_qs(urlsplit(url).query).keys())
-            store.add_endpoint(run_id, url, method=method, host=host,
-                               path=urlsplit(url).path or "/", source="har",
+            params = sorted(parse_qs(urlsplit(entry.url).query).keys())
+            store.add_endpoint(run_id, entry.url, method=entry.method, host=host,
+                               path=urlsplit(entry.url).path or "/", source="har",
                                params=params)
-            endpoints.append({"method": method, "url": url, "id_bearing": count_ids(url)})
+            endpoints.append({"method": entry.method, "url": entry.url,
+                              "id_bearing": count_ids(entry.url)})
             stats["endpoints"] += 1
-            if count_ids(url):
+            if count_ids(entry.url):
                 stats["id_endpoints"] += 1
 
-        parts = urlsplit(url)
+        parts = urlsplit(entry.url)
         store.add_asset(run_id, host, f"{parts.scheme}://{parts.netloc}", ex.status,
                         ex.response_headers.get("Server", ""), source="har")
 

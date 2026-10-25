@@ -6,7 +6,7 @@
 
 [![tests](https://img.shields.io/github/actions/workflow/status/webspoilt/bounty-hunter-/tests.yml?branch=main&style=flat-square&label=tests)](https://github.com/webspoilt/bounty-hunter-/actions/workflows/tests.yml)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?style=flat-square&logo=python&logoColor=white)
-![pytest](https://img.shields.io/badge/pytest-107%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-112%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
 [![scope](https://img.shields.io/badge/scope-deny--by--default-10b981?style=flat-square)](bb/scope.py)
 [![submission](https://img.shields.io/badge/submission-human--only-ef4444?style=flat-square)](bb/gate.py)
 ![deps](https://img.shields.io/badge/deps-httpx%20only-22d3ee?style=flat-square)
@@ -30,10 +30,11 @@ and stops before submission.</em>
 > not. **(iii)** Reports are generated from redacted evidence and are never submitted
 > automatically. On an instrumented OWASP Juice Shop lab, 10/10 adversarial scope-bypass inputs
 > are refused, a 53-request hunt recovers a high-confidence cross-account IDOR in 11.8 s, the
-> generated report passes an independent seven-question triage gate, and 107 tests run in ≈5 s
+> generated report passes an independent seven-question triage gate, and 112 tests run in ≈5 s
 > without network access. Beyond stateless replay, an authenticated HAR seeds a real endpoint
-> inventory, a declarative scenario runner tests create-as-A/cross-mutate-as-B flows, and outcome
-> metrics connect findings to accepted reports.
+> inventory, a declarative scenario runner tests create-as-A/cross-mutate-as-B flows, a proposer
+> turns captured traffic into reviewable drafts, and outcome metrics connect findings to accepted
+> reports.
 
 **Keywords:** bug bounty · broken object-level authorization · scope enforcement · evidence
 provenance · human-in-the-loop · local LLMs · HackerOne
@@ -70,7 +71,7 @@ stored evidence.
 | **C4** | Evidence capture with redaction at write time, an SQLite provenance store, and H1-ready report rendering with an LLM guard and an independent triage gate. | [`bb/redact.py`](bb/redact.py), [`bb/store.py`](bb/store.py), [`bb/report.py`](bb/report.py) |
 | **C5** | A UUID-addressed human approval queue with no code path that submits to a platform. | [`bb/gate.py`](bb/gate.py), [`bb/h1.py`](bb/h1.py) |
 | **C6** | A vendored source-audit contract (Cloudflare, MIT): six phases, JSON schema, and the upstream Node validators, kept separate from dynamic HTTP evidence. | [`skills/security-audit/`](skills/security-audit), [`bb/audit.py`](bb/audit.py) |
-| **C7** | An authenticated investigation loop: HAR traffic import, stateful two-role scenarios with explicit claims, and outcome metrics for acceptance, duplicates, and bounty per hour. | [`bb/har.py`](bb/har.py), [`bb/scenario.py`](bb/scenario.py), [`bb/metrics.py`](bb/metrics.py) |
+| **C7** | An authenticated investigation loop: HAR traffic import, reviewable scenario proposals, stateful two-role scenarios with explicit claims, and outcome metrics for acceptance, duplicates, and bounty per hour. | [`bb/har.py`](bb/har.py), [`bb/propose.py`](bb/propose.py), [`bb/scenario.py`](bb/scenario.py), [`bb/metrics.py`](bb/metrics.py) |
 
 ## 2 · At a glance
 
@@ -83,9 +84,9 @@ stored evidence.
 | **Reporting** | Deterministic H1 markdown; optional local-LLM polish with strict validation |
 | **Submission** | Manual. `bb submit` prints a curl payload and sends nothing |
 | **Source audit** | Companion Cloudflare skill (vendored, MIT): six phases, schema + Node validators |
-| **Investigation loop** | HAR import from authenticated browsing → stateful scenarios → outcome metrics |
+| **Investigation loop** | HAR import → reviewable scenario proposals → stateful runs → outcome metrics |
 | **Stack** | Python 3.11+, `httpx`, SQLite, optional Ollama, optional Claude-BugHunter |
-| **Tests** | 107, no network, ≈5 s; CI on Python 3.11 and 3.12 |
+| **Tests** | 112, no network, ≈5 s; CI on Python 3.11 and 3.12 |
 
 ## 3 · Safety model
 
@@ -270,6 +271,12 @@ file is size- and entry-capped. Import records observations and an object invent
 replay them. Mutating requests from browsing are kept as evidence, but only GET/HEAD requests are
 candidates for stateless replay.
 
+`bb scenario propose --har capture.har --program P` reads the same capture and clusters a create
+(`2xx` with an object id) with later reads, mutations, and deletes of that id. It writes draft
+scenario files plus a `REVIEW.md` under `data/proposed/`. It sends nothing. The captured session
+is assumed to be the owner (role A); the reviewer confirms roles, redacted body values, and the
+mutation marker before a draft is run.
+
 ### 5.7 Stateful scenarios
 
 The highest-value authorization tests need a sequence. A scenario is an ordered list of
@@ -321,7 +328,7 @@ This is a lab evaluation, not a benchmark against live programs; see §9.
 
 | # | Experiment | Measurement | Result |
 |---|---|---|---|
-| **E1** | Unit/integration suite | 107 tests, no network | **107/107 pass**, 3.3–4.9 s |
+| **E1** | Unit/integration suite | 112 tests, no network | **112/112 pass**, 3.3–4.9 s |
 | **E2** | Scope predicate, adversarial inputs | 10 attacks + 4 controls | **10/10 denied, 4/4 allowed** |
 | **E3** | Dry-run planning | full hunt, zero packets | **29 requests planned, 0 sent** |
 | **E4** | Lab hunt, two roles | Juice Shop, rate 6 req/s | **53 requests, 64 endpoints, 11.8 s** |
@@ -333,6 +340,7 @@ This is a lab evaluation, not a benchmark against live programs; see §9.
 | **E10** | Live scenario, Juice Shop | two accounts, 4 requests | **confirmed** cross-account read, report queued |
 | **E11** | Stateful write harness | mock lab: create → mutate → verify → cleanup | **confirmed** write-IDOR, cleanup observed |
 | **E12** | Outcome metrics | synthetic accepted outcome (INR 500, 90 min) | acceptance 100%, **₹333.33/hour** |
+| **E13** | HAR→scenario proposer | synthetic HAR: 6 entries, 1 create | **2 drafts** (read + write), 0 requests |
 
 **Discussion.** The high-confidence finding is the intended output: role A's own object was
 returned to role B with A's email present and B's absent. The four medium findings are the
@@ -420,6 +428,7 @@ If the API cannot expose scope (public programs), import a file:
 | `bb hypothesize --program P` | precedents + grounded leads |
 | `bb kb stats\|query\|ingest` | corpus operations |
 | `bb import har FILE --program P` | authenticated traffic → endpoint inventory |
+| `bb scenario propose --har F --program P` | draft scenarios from a capture (no execution) |
 | `bb scenario run --file F --program P --accounts A [--allow-write]` | stateful two-role scenario |
 | `bb outcome ID --status …` / `bb outcome --list` | record the program's decision |
 | `bb metrics [--program P]` | acceptance, duplicates, bounty per hour |
@@ -454,6 +463,7 @@ If the API cannot expose scope (public programs), import a file:
 ```powershell
 # 1. browse the program while logged in, export HAR from DevTools, import it
 bb import har ~\Downloads\app.har --program acme
+bb scenario propose --har ~\Downloads\app.har --program acme   # drafts + REVIEW.md
 
 # 2. test a discovered object endpoint statelessly (GET only)
 bb hunt --program acme --entry https://app.acme.com/ `
@@ -490,7 +500,7 @@ recon is passive; without ARTEX nothing changes.
 `bb hunt` measures a deployed target; it cannot see the code. When you can read the source
 (your own service, an open-source program, a scope that includes a repository), the repo
 vendors Cloudflare's [security-audit skill](https://github.com/cloudflare/security-audit-skill)
-at commit `c1c8a8c1471079fb0e188eeaff69b8e8db6564a8` (MIT; see
+at commit `c1c8a8c1471129fb0e188eeaff69b8e8db6564a8` (MIT; see
 [`skills/security-audit/NOTICE.md`](skills/security-audit/NOTICE.md)). It runs a six-phase,
 coverage-led audit with independent verification and two machine-checkable artifacts:
 `findings.json` (against `report-schema.json`) and `coverage-ledger.json`.
@@ -524,8 +534,9 @@ stays in the skill's run directory.
 * **Read-only by default.** `bb hunt` sends GET/HEAD. Scenarios may create, mutate, or delete
   only with `--allow-write`; cleanup is limited to objects the scenario created. Use disposable
   accounts and resources — a write-IDOR test is still a write.
-* **Scenarios are authored, not generated.** The runner proves what a scenario asserts; it does
-  not invent the flow. HAR import supplies endpoints, not semantics.
+* **Proposals are drafts, not proof.** `bb scenario propose` infers create/read/mutate clusters
+  from a capture and assumes the captured session is the owner. Review roles, redacted bodies,
+  and the mutation marker before running; the runner proves only what a scenario asserts.
 * **Outcomes are self-reported.** Metrics reflect what you record; unknown stays unknown.
 * **Two accounts required** for the authorization checks; one account gives infrastructure
   checks only.
@@ -542,15 +553,15 @@ git clone https://github.com/webspoilt/bounty-hunter-.git
 cd bounty-hunter-
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-python -m pytest -q          # 107 passed, no network
+python -m pytest -q          # 112 passed, no network
 python -m bb integrations    # optional local stack
 ```
 
 Repository map:
 
 ```
-bb/            implementation (scope, http, checks, report, store, har, scenario, metrics, cli)
-tests/         107 pytest cases: no network, MockTransport for HTTP
+bb/            implementation (scope, http, checks, report, store, har, propose, scenario, metrics, cli)
+tests/         112 pytest cases: no network, MockTransport for HTTP
 skills/        vendored Cloudflare security-audit skill (MIT): docs, schema, validators
 examples/      scenario examples + the stateful format
 assets/        banner
@@ -567,8 +578,8 @@ sending traffic.
 
 1. **Role and tenant transitions.** Invitations, org switches, ownership transfers, and
    downgrades are stateful flows the scenario format should model as first-class steps.
-2. **HAR-to-scenario synthesis.** Infer create/read pairs from a captured session and propose
-   scenarios for human review — not autonomous execution.
+2. **Multi-resource workflow synthesis.** Chain two objects (team → member → role) rather than a
+   single create/read/mutate cluster; keep proposals reviewable and never auto-run them.
 3. **Out-of-band checks.** Integrate an interactsh-style collector for blind SSRF/XXE without
    abandoning the scope predicate.
 4. **Duplicate detection at import time.** Query H1 Hacktivity by asset and weakness to attach a

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from bb.scope import Scope, parse_rule, parse_target
@@ -102,6 +104,14 @@ def test_scope_roundtrip(tmp_path):
     assert loaded.is_in_scope("https://x.acme.io/")
     assert not loaded.is_in_scope("https://old.acme.io/")
     assert loaded.fingerprint == s.fingerprint
+
+
+def test_scope_load_accepts_utf8_bom(tmp_path):
+    path = tmp_path / "scope.json"
+    payload = json.dumps({"program": "p", "in_scope": ["lab.test"]}).encode()
+    path.write_bytes(b"\xef\xbb\xbf" + payload)
+    loaded = Scope.load(path)
+    assert loaded.is_in_scope("https://lab.test/")
 
 
 def test_rule_parsing_edge_cases():

@@ -94,7 +94,7 @@ def cmd_scope_import(args) -> int:
     elif args.source == "file":
         if not args.file:
             raise SystemExit("--from file needs --file <scope.json>")
-        data = json.loads(Path(args.file).read_text(encoding="utf-8"))
+        data = json.loads(Path(args.file).read_text(encoding="utf-8-sig"))
         scope = Scope.from_json(data)
         scope.program = args.program
         scope.source = f"file:{args.file}"
@@ -497,6 +497,19 @@ def cmd_import(args) -> int:
 
 def cmd_scenario(args) -> int:
     from bb import scenario
+
+    if args.action == "propose":
+        from bb import propose
+        scope = _scope_or_die(args.program)
+        result = propose.propose(args.har, scope, args.program, out_dir=args.out,
+                                 limit=args.limit)
+        print(f"\n{len(result['written'])} draft scenario(s) in {result['out']}")
+        for item in result["written"]:
+            print(f"  {item['kind']:10} {item['file']:40} {item['method']} {item['template']}")
+        print(f"\nreview first: {result['out'] / 'REVIEW.md'}")
+        print("nothing was executed, queued, or submitted.")
+        return 0
+
     scope = _scope_or_die(args.program)
     accounts = load_accounts(args.accounts)
     data = scenario.load_scenario(args.file)
@@ -783,6 +796,12 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--llm", action="store_true")
     sr.add_argument("--no-queue", action="store_true")
     sr.set_defaults(func=cmd_scenario)
+    sp = ssub.add_parser("propose", help="draft scenarios from an authenticated HAR")
+    sp.add_argument("--har", required=True)
+    sp.add_argument("--program", required=True)
+    sp.add_argument("--out", help="output directory (default: data/proposed/<program>-<stamp>)")
+    sp.add_argument("--limit", type=int, default=25)
+    sp.set_defaults(func=cmd_scenario)
 
     oc = sub.add_parser("outcome", help="record the program's decision on a finding")
     oc.add_argument("finding_id", nargs="?")

@@ -13,6 +13,7 @@ data/reports/
 data/decided/
 data/findings/
 data/recon/
+data/proposed/
 data/logs/
 data/telegram_offset
 data/*.accounts.json
