@@ -77,11 +77,28 @@ def _expand(value, email: str, password: str):
     return value
 
 
-def login_roles(client: ScopedClient, config: dict, log=print) -> list[Role]:
-    """One login per account. Per-account overrides are respected (no shared login_path bug)."""
-    roles: list[Role] = []
+def login_accounts(client: ScopedClient, config: dict,
+                   indices: list[int] | None = None, log=print) -> dict[int, Role]:
+    """Log in only the requested account indices (all when indices is None).
+
+    Returns {account_index: Role}. Indices are validated before any request.
+    """
+    accounts = config.get("accounts") or []
+    if not accounts:
+        raise RuntimeError("accounts file has no accounts[]")
+    if indices is None:
+        selected = list(range(len(accounts)))
+    else:
+        selected = sorted({int(i) for i in indices})
+    for i in selected:
+        if i < 0 or i >= len(accounts):
+            raise RuntimeError(f"role account index {i} out of range "
+                               f"(accounts: {len(accounts)})")
+
+    roles: dict[int, Role] = {}
     base_cfg = config.get("login") or {}
-    for i, acc in enumerate(config["accounts"]):
+    for i in selected:
+        acc = accounts[i]
         login = {**base_cfg, **(acc.get("login") or {})}
         login_path = login.get("path") or "/login"
         body_keys = login.get("body_keys") or {"email": "email", "password": "password"}
@@ -114,7 +131,7 @@ def login_roles(client: ScopedClient, config: dict, log=print) -> list[Role]:
                 role = Role(label=acc.get("label", f"role{i}"), email=email,
                             identity=acc.get("identity") or email,
                             cookies=dict(resp.cookies))
-                roles.append(role)
+                roles[i] = role
                 log(f"  [login] {role.label} via cookies ({email})")
                 continue
             raise RuntimeError(
@@ -133,9 +150,15 @@ def login_roles(client: ScopedClient, config: dict, log=print) -> list[Role]:
             user_id=data_claims.get("id") or data_claims.get("sub") or data_claims.get("user_id"),
         )
         role.headers.update(acc.get("headers") or {})
-        roles.append(role)
+        roles[i] = role
         log(f"  [login] {role.label} ({email}) id={role.user_id}")
 
     if len(roles) < 2:
         raise RuntimeError("need at least two roles for an authz test")
     return roles
+
+
+def login_roles(client: ScopedClient, config: dict, log=print) -> list[Role]:
+    """All accounts, ordered by their position in the accounts file (v1 behavior)."""
+    by_index = login_accounts(client, config, indices=None, log=log)
+    return [by_index[i] for i in sorted(by_index)]

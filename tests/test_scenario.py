@@ -198,11 +198,14 @@ def test_dry_run_plans_without_sending(tmp_path, patch_reports):
     assert result["finding"] is None
 
 
-def test_unresolved_placeholder_is_refused(tmp_path, patch_reports):
+def test_unresolved_placeholder_skips_step(tmp_path, patch_reports):
     data = read_scenario()
     data["steps"][1]["path"] = "/items/${missing}"
-    with pytest.raises(scenario.ScenarioError, match="unresolved"):
-        run(data, tmp_path, transport=httpx.MockTransport(make_handler({})))
+    store, result = run(data, tmp_path, transport=httpx.MockTransport(make_handler({})))
+    assert result["verdict"] == "inconclusive"
+    skipped = [r for r in result["steps"].values() if r.skipped]
+    assert len(skipped) == 1 and "unresolved" in skipped[0].error
+    assert store.findings(status=None) == []
 
 
 def test_scenario_without_claim_is_observational(tmp_path, patch_reports):

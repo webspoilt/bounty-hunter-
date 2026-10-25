@@ -1,0 +1,64 @@
+{
+  "schema": 2,
+  "name": "multi-role-state-change",
+  "base_url": "https://app.example.com",
+  "rate": 2.0,
+  "roles": {
+    "admin": {"account": 0},
+    "victim": {"account": 1},
+    "attacker": {"account": 2}
+  },
+  "steps": [
+    {
+      "id": "create_team",
+      "role": "admin",
+      "method": "POST",
+      "path": "/api/teams",
+      "json": {"name": "bb-${run_id}"},
+      "expect": {"status": [200, 201], "json": {"$.id": {"exists": true}}},
+      "extract": {"team_id": "$.id"}
+    },
+    {
+      "id": "invite",
+      "role": "admin",
+      "method": "POST",
+      "path": "/api/teams/${team_id}/invites",
+      "json": {"email": "${attacker.email}", "role": "member"},
+      "expect": {"status": [200, 201]},
+      "extract": {"invite_token": "$.token"}
+    },
+    {
+      "id": "accept",
+      "role": "attacker",
+      "method": "POST",
+      "path": "/api/invites/${invite_token}/accept",
+      "expect": {"status": [200, 204]}
+    },
+    {
+      "id": "promote",
+      "role": "attacker",
+      "method": "PATCH",
+      "path": "/api/teams/${team_id}/members/${attacker.id}",
+      "json": {"role": "admin"},
+      "expect": {"status": [200], "json": {"$.role": "admin"}}
+    },
+    {
+      "id": "verify",
+      "role": "victim",
+      "method": "GET",
+      "path": "/api/teams/${team_id}",
+      "expect": {"status": [200], "body_contains": ["${attacker.email}"]}
+    }
+  ],
+  "claim": {
+    "type": "state_change",
+    "step": "promote",
+    "json": {"$.role": "admin"},
+    "owner": "victim",
+    "attacker": "attacker",
+    "owner_verify": "verify"
+  },
+  "cleanup": [
+    {"role": "admin", "method": "DELETE", "path": "/api/teams/${team_id}"}
+  ]
+}

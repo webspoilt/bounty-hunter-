@@ -179,13 +179,15 @@ def render_h1(f: Finding, *, scope=None, polished: dict | None = None,
                           "(`$TOKEN_A` = owner account, `$TOKEN_B` = second account):\n\n"
                           f"```bash\n{curls}\n```\n" if curls else ""))
     duplicate_md = f"\n## Duplicate check\n\n{novelty}\n" if novelty else ""
+    evidence_line = (f"**Evidence:** {f.meta['evidence']}\n"
+                     if f.meta.get("evidence") else "")
     return f"""# {f.title}
 
 **Severity:** {SEV_LABEL.get(f.severity, f.severity)}
 **Bug class:** {f.bug_class}
 **Asset:** `{f.url}`
 **Confidence:** {f.confidence}
-**Exposed data:** {data_classes(f)}
+{evidence_line}**Exposed data:** {data_classes(f)}
 **Reported:** {now_iso()}
 
 ## Summary
@@ -218,6 +220,7 @@ def render_cbh_finding(f: Finding, novelty: str = "") -> str:
     """Finding markdown in the format `cbh triage` / `cbh report` expect."""
     blocks = "\n".join(_http_block(e.exchange, e.summary)
                        for e in f.evidence[:2] if e.exchange)
+    evidence_line = f"evidence: {f.meta['evidence']}\n" if f.meta.get("evidence") else ""
     return f"""---
 title: {f.title}
 severity: {SEV_LABEL.get(f.severity, f.severity)}
@@ -225,7 +228,7 @@ asset: {f.url}
 endpoint: {urlsplit(f.url).path}
 bug_class: {f.bug_class}
 confidence: {f.confidence}
----
+{evidence_line}---
 
 ## Summary
 {f.summary}

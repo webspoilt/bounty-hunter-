@@ -21,6 +21,17 @@ It clusters a captured create with later reads/mutations/deletes and writes draf
 `REVIEW.md` under `data/proposed/`. It never executes anything; the captured session is assumed
 to be the owner (A), so verify roles and redacted body values before running a draft.
 
+## Schema 2
+
+`multi-role-state-change.json` shows the opt-in schema 2 shape: a `roles` map with three labels,
+JSON assertions, and a `state_change` claim verified by a second role. Existing A/B files keep
+working unchanged; new fields require `"schema": 2`.
+
+```bash
+bb scenario run --file examples/scenarios/multi-role-state-change.json \
+  --program acme --accounts data/acme.accounts.json --allow-write
+```
+
 ## Steps
 
 | Field | Meaning |

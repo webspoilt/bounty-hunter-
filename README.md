@@ -6,7 +6,7 @@
 
 [![tests](https://img.shields.io/github/actions/workflow/status/webspoilt/bounty-hunter-/tests.yml?branch=main&style=flat-square&label=tests)](https://github.com/webspoilt/bounty-hunter-/actions/workflows/tests.yml)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?style=flat-square&logo=python&logoColor=white)
-![pytest](https://img.shields.io/badge/pytest-112%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-135%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
 [![scope](https://img.shields.io/badge/scope-deny--by--default-10b981?style=flat-square)](bb/scope.py)
 [![submission](https://img.shields.io/badge/submission-human--only-ef4444?style=flat-square)](bb/gate.py)
 ![deps](https://img.shields.io/badge/deps-httpx%20only-22d3ee?style=flat-square)
@@ -30,7 +30,7 @@ and stops before submission.</em>
 > not. **(iii)** Reports are generated from redacted evidence and are never submitted
 > automatically. On an instrumented OWASP Juice Shop lab, 10/10 adversarial scope-bypass inputs
 > are refused, a 53-request hunt recovers a high-confidence cross-account IDOR in 11.8 s, the
-> generated report passes an independent seven-question triage gate, and 112 tests run in ≈5 s
+> generated report passes an independent seven-question triage gate, and 135 tests run in ≈5 s
 > without network access. Beyond stateless replay, an authenticated HAR seeds a real endpoint
 > inventory, a declarative scenario runner tests create-as-A/cross-mutate-as-B flows, a proposer
 > turns captured traffic into reviewable drafts, and outcome metrics connect findings to accepted
@@ -71,14 +71,15 @@ stored evidence.
 | **C4** | Evidence capture with redaction at write time, an SQLite provenance store, and H1-ready report rendering with an LLM guard and an independent triage gate. | [`bb/redact.py`](bb/redact.py), [`bb/store.py`](bb/store.py), [`bb/report.py`](bb/report.py) |
 | **C5** | A UUID-addressed human approval queue with no code path that submits to a platform. | [`bb/gate.py`](bb/gate.py), [`bb/h1.py`](bb/h1.py) |
 | **C6** | A vendored source-audit contract (Cloudflare, MIT): six phases, JSON schema, and the upstream Node validators, kept separate from dynamic HTTP evidence. | [`skills/security-audit/`](skills/security-audit), [`bb/audit.py`](bb/audit.py) |
-| **C7** | An authenticated investigation loop: HAR traffic import, reviewable scenario proposals, stateful two-role scenarios with explicit claims, and outcome metrics for acceptance, duplicates, and bounty per hour. | [`bb/har.py`](bb/har.py), [`bb/propose.py`](bb/propose.py), [`bb/scenario.py`](bb/scenario.py), [`bb/metrics.py`](bb/metrics.py) |
+| **C7** | An authenticated investigation loop: HAR traffic import, reviewable scenario proposals, stateful multi-role scenarios with explicit claims, and outcome metrics for acceptance, duplicates, and bounty per hour. | [`bb/har.py`](bb/har.py), [`bb/propose.py`](bb/propose.py), [`bb/scenario.py`](bb/scenario.py), [`bb/metrics.py`](bb/metrics.py) |
 
 ## 2 · At a glance
 
 | Property | Value |
 |---|---|
 | **Scope model** | Deny by default; wildcard/domain/URL/CIDR/IP; ports and path prefixes; explicit exclusions |
-| **Authorization test** | Two accounts, same object, similarity + identity-presence rule |
+| **Authorization test** | Two or more roles, same object, similarity + identity-presence rule; schema 2 adds arbitrary labels |
+| **Scenario schema** | v1 A/B unchanged; v2 adds role maps, JSON assertions, denied-as-coverage, state-change claims |
 | **Checks** | `authz`, `unauth`, `cors`, `exposed`, `graphql`, `open_redirect`, `headers` (informational) |
 | **Evidence** | Every exchange stored redacted (headers, bodies), hashed, deduplicated per run |
 | **Reporting** | Deterministic H1 markdown; optional local-LLM polish with strict validation |
@@ -86,7 +87,7 @@ stored evidence.
 | **Source audit** | Companion Cloudflare skill (vendored, MIT): six phases, schema + Node validators |
 | **Investigation loop** | HAR import → reviewable scenario proposals → stateful runs → outcome metrics |
 | **Stack** | Python 3.11+, `httpx`, SQLite, optional Ollama, optional Claude-BugHunter |
-| **Tests** | 112, no network, ≈5 s; CI on Python 3.11 and 3.12 |
+| **Tests** | 135, no network, ≈5 s; CI on Python 3.11 and 3.12 |
 
 ## 3 · Safety model
 
@@ -280,7 +281,7 @@ mutation marker before a draft is run.
 ### 5.7 Stateful scenarios
 
 The highest-value authorization tests need a sequence. A scenario is an ordered list of
-requests with two roles, variable extraction, and an explicit claim:
+requests with two or more roles, variable extraction, and an explicit claim:
 
 ```json
 {"name": "object-write-idor", "base_url": "https://app.example.com",
@@ -302,15 +303,41 @@ Claims are deterministic:
 |---|---|
 | `idor_read` | the attacker step returns 2xx, contains the owner's identity, and not the attacker's |
 | `idor_write` | the mutation returns 2xx and the owner's later read observes the attacker's marker |
+| `state_change` | the attacker step returns 2xx and its `json` assertion passes; with `owner_verify`, the second role confirms it |
 
 `idor_read` also accepts `owner_step`, the owner's own baseline request. Include it: without it
 the report carries only the attacker's exchange and no owner-side proof for the triager. The
 runner logs a warning when it is missing.
 
-A denied attacker (`401/403/404`) yields **enforced** — coverage, not a finding. Anything else is
-`inconclusive`; no report is produced. Every non-GET/HEAD step requires `--allow-write`; cleanup
-runs only with that flag, only after the run, and only against resources the scenario created.
-`--dry-run` resolves and plans the sequence without sending.
+A denied attacker (`401/402/403/404`) yields **enforced** — coverage, not a finding. Anything
+else is `inconclusive`; no report is produced. Every non-GET/HEAD step requires `--allow-write`;
+cleanup runs only with that flag, only after the run, in the listed order, and only against
+resources the scenario created. `--dry-run` resolves and plans the sequence without sending.
+
+#### Schema 2 (opt-in)
+
+`"schema": 2` keeps A, B and every v1 file working, and adds:
+
+- **`roles`** — `{"admin": {"account": 0}, "victim": {"account": 1}, "attacker": {"account": 2}}`
+  (shorthand `"admin": 0` is accepted). Only accounts referenced by steps, cleanup, or the claim
+  are logged in; every declared index is validated before the first request. Header precedence is
+  account → role → step, with later layers winning.
+- **`expect.json`** — dotted JSON assertions: `$.items[0].id`, `$.items.0.id`, and matchers
+  `equals`, `not_equals`, `contains`, `one_of`, `exists`. A bare value means deep equality. A key
+  containing a literal dot is not addressable; use `body_contains` for those.
+- **`denied_is_coverage`** — on a step, 401/402/403/404 is a successful coverage observation.
+  The run continues, but that step's `extract` fields are not populated. A later step whose
+  placeholder is therefore unresolved is skipped and recorded, never sent with a guessed id.
+  429 is *not* coverage; it is retriable/inconclusive.
+- **`state_change` claim** — requires an attacker-role step and a non-empty `json` assertion.
+  Add `owner_verify` (a second-role step) for dual-role evidence; without it the finding is
+  confirmed but labelled `single-role` in its metadata and report.
+
+See [`examples/scenarios/multi-role-state-change.json`](examples/scenarios/multi-role-state-change.json)
+for the full shape. Extract names that collide with role variables (`attacker.email`,
+`run_id`, `marker`, …) are rejected at load time. Cleanup is ordered and strict: an unresolved
+placeholder is skipped and logged, never guessed; HTTP failures are ignored by default, or
+recorded when a step sets `"ignore_failure": false`.
 
 ### 5.8 Outcomes and metrics
 
@@ -328,7 +355,7 @@ This is a lab evaluation, not a benchmark against live programs; see §9.
 
 | # | Experiment | Measurement | Result |
 |---|---|---|---|
-| **E1** | Unit/integration suite | 112 tests, no network | **112/112 pass**, 3.3–4.9 s |
+| **E1** | Unit/integration suite | 135 tests, no network | **135/135 pass**, 3.3–4.9 s |
 | **E2** | Scope predicate, adversarial inputs | 10 attacks + 4 controls | **10/10 denied, 4/4 allowed** |
 | **E3** | Dry-run planning | full hunt, zero packets | **29 requests planned, 0 sent** |
 | **E4** | Lab hunt, two roles | Juice Shop, rate 6 req/s | **53 requests, 64 endpoints, 11.8 s** |
@@ -341,6 +368,7 @@ This is a lab evaluation, not a benchmark against live programs; see §9.
 | **E11** | Stateful write harness | mock lab: create → mutate → verify → cleanup | **confirmed** write-IDOR, cleanup observed |
 | **E12** | Outcome metrics | synthetic accepted outcome (INR 500, 90 min) | acceptance 100%, **₹333.33/hour** |
 | **E13** | HAR→scenario proposer | synthetic HAR: 6 entries, 1 create | **2 drafts** (read + write), 0 requests |
+| **E14** | Schema-2 multi-role harness | 3 accounts, state change | **3 logins**, dual-role confirm, denied→enforced |
 
 **Discussion.** The high-confidence finding is the intended output: role A's own object was
 returned to role B with A's email present and B's absent. The four medium findings are the
@@ -509,7 +537,7 @@ recon is passive; without ARTEX nothing changes.
 `bb hunt` measures a deployed target; it cannot see the code. When you can read the source
 (your own service, an open-source program, a scope that includes a repository), the repo
 vendors Cloudflare's [security-audit skill](https://github.com/cloudflare/security-audit-skill)
-at commit `c1c8a8c1471129fb0e188eeaff69b8e8db6564a8` (MIT; see
+at commit `c1c8a8c1471359fb0e188eeaff69b8e8db6564a8` (MIT; see
 [`skills/security-audit/NOTICE.md`](skills/security-audit/NOTICE.md)). It runs a six-phase,
 coverage-led audit with independent verification and two machine-checkable artifacts:
 `findings.json` (against `report-schema.json`) and `coverage-ledger.json`.
@@ -547,8 +575,10 @@ stays in the skill's run directory.
   from a capture and assumes the captured session is the owner. Review roles, redacted bodies,
   and the mutation marker before running; the runner proves only what a scenario asserts.
 * **Outcomes are self-reported.** Metrics reflect what you record; unknown stays unknown.
-* **Two accounts required** for the authorization checks; one account gives infrastructure
-  checks only.
+* **At least two roles required** for the authorization checks; schema 2 supports three or more
+  labels and accounts. `bb hunt` itself still logs in exactly two roles.
+* **Schema 2 is opt-in.** v1 files are unchanged; new fields are rejected without
+  `"schema": 2` so a typo cannot silently change semantics.
 * **Threshold, not ground truth.** $\tau = 0.90$ is conservative; medium candidates are
   explicitly labelled as requiring ownership confirmation.
 * **LLM quality is not measured.** It is constrained, validated, and optional — not trusted.
@@ -562,7 +592,7 @@ git clone https://github.com/webspoilt/bounty-hunter-.git
 cd bounty-hunter-
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-python -m pytest -q          # 112 passed, no network
+python -m pytest -q          # 135 passed, no network
 python -m bb integrations    # optional local stack
 ```
 
@@ -570,7 +600,7 @@ Repository map:
 
 ```
 bb/            implementation (scope, http, checks, report, store, har, propose, scenario, metrics, cli)
-tests/         112 pytest cases: no network, MockTransport for HTTP
+tests/         135 pytest cases: no network, MockTransport for HTTP
 skills/        vendored Cloudflare security-audit skill (MIT): docs, schema, validators
 examples/      scenario examples + the stateful format
 assets/        banner
@@ -585,8 +615,8 @@ sending traffic.
 
 ## 11 · Future work
 
-1. **Role and tenant transitions.** Invitations, org switches, ownership transfers, and
-   downgrades are stateful flows the scenario format should model as first-class steps.
+1. **Guided workflow templates.** Capture common team/invite/role patterns as reusable step
+   libraries so a new program needs data, not a new scenario shape.
 2. **Multi-resource workflow synthesis.** Chain two objects (team → member → role) rather than a
    single create/read/mutate cluster; keep proposals reviewable and never auto-run them.
 3. **Out-of-band checks.** Integrate an interactsh-style collector for blind SSRF/XXE without
