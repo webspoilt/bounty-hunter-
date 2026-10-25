@@ -26,7 +26,8 @@ Built-in variables: `${A.email}`, `${A.id}`, `${B.email}`, `${B.id}`, `${marker}
 ## Claims
 
 `idor_read` — the `step` must return 2xx, contain the owner's identity, and not contain
-the attacker's identity.
+the attacker's identity. Add `owner_step` (the owner's own baseline request); without it the
+report has no owner-side evidence and the runner logs a warning.
 
 `idor_write` — `mutate` must return 2xx and the owner's `verify` step must observe the
 `marker` written by the attacker.

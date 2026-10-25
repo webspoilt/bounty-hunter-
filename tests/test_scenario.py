@@ -93,12 +93,13 @@ def patch_reports(tmp_path, monkeypatch):
     return tmp_path
 
 
-def run(data, tmp_path, *, allow_write=False, dry_run=False, transport=None):
+def run(data, tmp_path, *, allow_write=False, dry_run=False, transport=None,
+        log=lambda *_: None):
     store = Store(tmp_path / "db.sqlite")
     scope = Scope.from_entries("p", ["lab.test"])
     return store, scenario.run_scenario(
         data, scope=scope, accounts=ACCOUNTS, program="p", store=store,
-        allow_write=allow_write, dry_run=dry_run, transport=transport, log=lambda *_: None)
+        allow_write=allow_write, dry_run=dry_run, transport=transport, log=log)
 
 
 def test_read_idor_is_confirmed_and_queued(tmp_path, patch_reports):
@@ -114,6 +115,18 @@ def test_read_idor_is_confirmed_and_queued(tmp_path, patch_reports):
     assert stored.meta["report_path"]
     assert len(store.queue("pending")) == 1
     assert (tmp_path / "reports" / finding.id / "report.md").exists()
+
+
+def test_idor_read_without_owner_step_warns(tmp_path, patch_reports):
+    logs = []
+    data = read_scenario()
+    del data["claim"]["owner_step"]
+    store, result = run(data, tmp_path, transport=httpx.MockTransport(make_handler({})),
+                        log=logs.append)
+    assert result["verdict"] == "confirmed"
+    assert any("owner_step" in line for line in logs)
+    # the claim still holds, but the report has no owner-side exchange
+    assert len(result["finding"].evidence) == 1
 
 
 def test_enforced_boundary_is_not_a_finding(tmp_path, patch_reports):

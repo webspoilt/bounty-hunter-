@@ -350,8 +350,12 @@ def run_scenario(scenario: dict, *, scope: Scope, accounts: dict, program: str,
                     "steps": results, "planned": list(client.planned)}
         if all(r.ok for r in results.values()):
             if scenario.get("claim"):
-                verdict, why = evaluate_claim(scenario["claim"], results, role_map, variables)
-                log(f"  [claim] {scenario['claim']['type']} -> {verdict}: {why}")
+                claim = scenario["claim"]
+                if claim.get("type") == "idor_read" and not claim.get("owner_step"):
+                    log("  [claim] warning: idor_read has no owner_step; the report will carry "
+                        "only the attacker's exchange (add the owner's baseline request)")
+                verdict, why = evaluate_claim(claim, results, role_map, variables)
+                log(f"  [claim] {claim['type']} -> {verdict}: {why}")
                 if verdict == "confirmed":
                     finding = _build_finding(scenario, results, role_map, verdict, why,
                                              program, scope, run_id)
