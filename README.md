@@ -384,6 +384,10 @@ requests: 53   endpoints: 64   scope audit: {'ALLOW': 53}
 
 ### 7.2 A real program
 
+Three inputs gate the first live run: `H1_USERNAME`/`H1_TOKEN`, two accounts you control, and an
+authenticated HAR capture (DevTools) or a Burp proxy. Without them, start with the local demo in
+§7.1 and the capture workflow in §5.6.
+
 ```powershell
 $env:H1_USERNAME = "your-handle"
 $env:H1_TOKEN    = "..."                    # hackerone.com/settings/api_token
@@ -405,12 +409,17 @@ bb decide <queue-id> --approve             # exports data/decided/<id>.md
 bb submit --finding <id> --team acme       # prints curl + JSON; sends nothing
 ```
 
-If the API cannot expose scope (public programs), import a file:
+If the API cannot expose scope (public programs), save a file such as
+`data/scopes/acme.json` and import it:
 
 ```json
 {"program": "acme",
  "in_scope": ["*.acme.com", "api.acme.com"],
  "out_of_scope": ["staging.acme.com"]}
+```
+
+```powershell
+bb scope import --program acme --from file --file data/scopes/acme.json
 ```
 
 ### 7.3 Commands
@@ -607,6 +616,14 @@ sending traffic.
    findings. <https://github.com/cloudflare/security-audit-skill>
 10. Cloudflare. *Build your own vulnerability harness*.
     <https://blog.cloudflare.com/build-your-own-vulnerability-harness>
+
+## License and security policy
+
+MIT — see [`LICENSE`](LICENSE). The vendored Cloudflare `security-audit` skill retains its own
+MIT license in [`skills/security-audit/LICENSE`](skills/security-audit/LICENSE).
+
+Security issues in bountybot itself: see [`SECURITY.md`](SECURITY.md). Third-party targets are
+out of scope; report those to the program that authorised the test.
 
 ## Citation
 
