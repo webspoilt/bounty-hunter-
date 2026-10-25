@@ -30,7 +30,7 @@ class Role:
 
 
 def load_accounts(path: str | Path) -> dict:
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     if not data.get("accounts"):
         raise ValueError(f"{path}: no accounts[] — need at least two roles")
     return data

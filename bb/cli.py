@@ -472,6 +472,100 @@ def cmd_demo(args) -> int:
     return 0
 
 
+def cmd_import(args) -> int:
+    from bb import har
+    scope = _scope_or_die(args.program)
+    ensure_dirs()
+    store = Store()
+    run_id = store.start_run(scope.program, "", scope.fingerprint,
+                             {"source": "har", "file": str(Path(args.file).resolve())})
+    try:
+        stats = har.import_har(args.file, scope, store, run_id)
+    finally:
+        store.finish_run(run_id, {"source": "har"})
+    print(f"\nimported into run {run_id}: {stats['endpoints']} endpoints "
+          f"({stats['id_endpoints']} id-bearing), {stats['exchanges']} exchanges")
+    id_rows = [e for e in stats.get("endpoint_list", []) if e["id_bearing"]][:20]
+    if id_rows:
+        print("\nobject-shaped endpoints to test with a scenario:")
+        for row in id_rows:
+            print(f"  {row['method']:6} {row['url']}")
+    print("\nnext: write a scenario against one of these, or run "
+          "`bb hunt` to test the inventory statelessly.")
+    return 0
+
+
+def cmd_scenario(args) -> int:
+    from bb import scenario
+    scope = _scope_or_die(args.program)
+    accounts = load_accounts(args.accounts)
+    data = scenario.load_scenario(args.file)
+    store = Store()
+    result = scenario.run_scenario(
+        data, scope=scope, accounts=accounts, program=args.program, store=store,
+        allow_write=args.allow_write, dry_run=args.dry_run, proxy=args.proxy,
+        llm=args.llm, queue=not args.no_queue)
+    print(f"\nverdict: {result['verdict'].upper()}   run: {result['run_id']}   "
+          f"requests: {result.get('requests', 0)}")
+    finding = result.get("finding")
+    if finding:
+        print(f"[{finding.severity.upper()}] {finding.id}  {finding.title}")
+        meta = store.get_finding(finding.id).meta if store.get_finding(finding.id) else {}
+        if meta.get("report_path"):
+            print(f"report: {meta['report_path']}")
+        if meta.get("queue_id"):
+            print(f"queue:  {meta['queue_id']}   (bb decide {meta['queue_id']} --approve)")
+    elif result["verdict"] == "enforced":
+        print("the server enforced the boundary; this is coverage, not a finding.")
+    return 0 if result["verdict"] not in ("inconclusive",) else 1
+
+
+def cmd_outcome(args) -> int:
+    store = Store()
+    if args.list:
+        rows = store.outcome_rows(program=args.program)
+        if not rows:
+            print("no findings yet")
+            return 0
+        print(f"{'finding':14} {'status':12} {'bounty':>8} {'min':>5}  {'class':20} program")
+        for row in rows:
+            bounty = "" if row.get("bounty") is None else f"{row['bounty']:,.0f}"
+            print(f"{row['id']:14} {(row.get('status') or 'unknown'):12} {bounty:>8} "
+                  f"{(row.get('minutes') or ''):>5}  {(row.get('bug_class') or '')[:20]:20} "
+                  f"{row.get('program') or ''}")
+        return 0
+    if not args.finding_id:
+        raise SystemExit("give a finding id or --list")
+    if args.status is None and all(v is None for v in
+                                  (args.bounty, args.currency, args.minutes,
+                                   args.submitted, args.notes)):
+        finding = store.get_finding(args.finding_id)
+        if not finding:
+            raise SystemExit(f"no finding matching {args.finding_id!r}")
+        outcome = store.get_outcome(finding.id)
+        print(f"{finding.id}  {finding.title}")
+        print(json.dumps(outcome, indent=2))
+        return 0
+    outcome = store.set_outcome(
+        args.finding_id, status=args.status, bounty=args.bounty, currency=args.currency,
+        minutes=args.minutes, submitted_at=args.submitted, notes=args.notes)
+    print(f"{outcome['finding_id']}: status={outcome['status']} "
+          f"bounty={outcome.get('bounty')} currency={outcome.get('currency')} "
+          f"minutes={outcome.get('minutes')} submitted={outcome.get('submitted_at')}")
+    print("see the scoreboard: bb metrics")
+    return 0
+
+
+def cmd_metrics(args) -> int:
+    from bb import metrics
+    data = metrics.collect(Store(), program=args.program)
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(metrics.format_metrics(data))
+    return 0
+
+
 def cmd_artex(args) -> int:
     artex = Artex()
     if args.action == "status":
@@ -668,6 +762,45 @@ def build_parser() -> argparse.ArgumentParser:
         func=cmd_audit)
     asub.add_parser("ingest", help="add the methodology to the knowledge base").set_defaults(
         func=cmd_audit)
+
+    imp = sub.add_parser("import", help="import authenticated traffic (HAR export)")
+    isub = imp.add_subparsers(dest="source", required=True)
+    ihar = isub.add_parser("har", help="import a browser HAR export")
+    ihar.add_argument("file")
+    ihar.add_argument("--program", required=True)
+    ihar.set_defaults(func=cmd_import)
+
+    sc = sub.add_parser("scenario", help="stateful authorization scenarios")
+    ssub = sc.add_subparsers(dest="action", required=True)
+    sr = ssub.add_parser("run", help="run a scenario file (JSON; YAML if PyYAML is installed)")
+    sr.add_argument("--file", required=True)
+    sr.add_argument("--program", required=True)
+    sr.add_argument("--accounts", required=True)
+    sr.add_argument("--allow-write", action="store_true",
+                    help="permit POST/PUT/PATCH/DELETE (disposable resources only)")
+    sr.add_argument("--dry-run", action="store_true")
+    sr.add_argument("--proxy")
+    sr.add_argument("--llm", action="store_true")
+    sr.add_argument("--no-queue", action="store_true")
+    sr.set_defaults(func=cmd_scenario)
+
+    oc = sub.add_parser("outcome", help="record the program's decision on a finding")
+    oc.add_argument("finding_id", nargs="?")
+    oc.add_argument("--status", choices=["accepted", "duplicate", "informative",
+                                         "rejected", "unknown"])
+    oc.add_argument("--bounty", type=float)
+    oc.add_argument("--currency")
+    oc.add_argument("--minutes", type=float)
+    oc.add_argument("--submitted")
+    oc.add_argument("--notes")
+    oc.add_argument("--program")
+    oc.add_argument("--list", action="store_true")
+    oc.set_defaults(func=cmd_outcome)
+
+    mt = sub.add_parser("metrics", help="acceptance, duplicates, bounty per hour")
+    mt.add_argument("--program")
+    mt.add_argument("--json", action="store_true")
+    mt.set_defaults(func=cmd_metrics)
     return p
 
 

@@ -1,0 +1,25 @@
+{
+  "name": "object-read-idor",
+  "base_url": "https://app.example.com",
+  "steps": [
+    {
+      "id": "owner_read",
+      "role": "A",
+      "method": "GET",
+      "path": "/api/users/${A.id}"
+    },
+    {
+      "id": "attack_read",
+      "role": "B",
+      "method": "GET",
+      "path": "/api/users/${A.id}"
+    }
+  ],
+  "claim": {
+    "type": "idor_read",
+    "step": "attack_read",
+    "owner_step": "owner_read",
+    "owner": "A",
+    "attacker": "B"
+  }
+}

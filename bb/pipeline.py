@@ -212,3 +212,11 @@ def _report_and_queue(findings: list[Finding], cfg: HuntConfig, scope: Scope, st
             log(f"  [queued] {qid}  [{f.severity}] {f.title[:70]}  -> {path}")
         else:
             log(f"  [report] {f.id}  [{f.severity}] {f.title[:70]}  -> {path}")
+
+
+def finalize_findings(findings: list[Finding], *, program: str, scope: Scope, store: Store,
+                      llm: bool = False, queue: bool = True, log=print) -> None:
+    """Shared report+queue path for anything that produces a Finding (hunt, scenario)."""
+    gate = ApprovalGate(store)
+    cfg = HuntConfig(program=program, scope=scope, entry_urls=[], llm=llm, queue=queue)
+    _report_and_queue(findings, cfg, scope, store, gate, log)

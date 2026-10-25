@@ -49,10 +49,16 @@ CREATE TABLE IF NOT EXISTS queue (
     id TEXT PRIMARY KEY, finding_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
     queued_at TEXT NOT NULL, decided_at TEXT, channel TEXT
 );
+CREATE TABLE IF NOT EXISTS outcomes (
+    finding_id TEXT PRIMARY KEY, status TEXT NOT NULL, bounty REAL, currency TEXT,
+    minutes REAL, submitted_at TEXT, outcome_at TEXT, notes TEXT, updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
 CREATE INDEX IF NOT EXISTS idx_queue_state ON queue(state);
 CREATE INDEX IF NOT EXISTS idx_endpoints_run ON endpoints(run_id);
 """
+
+OUTCOME_STATUSES = ("accepted", "duplicate", "informative", "rejected", "unknown")
 
 
 def _hash_payload(run_id: str | None, tool: str, method: str, url: str, status: int,
@@ -291,6 +297,70 @@ class Store:
         self.conn.commit()
         out = dict(row); out["state"] = state
         return out
+
+    # ---------- outcomes (the feedback loop) ----------
+
+    def set_outcome(self, finding_id: str, *, status: str | None = None,
+                    bounty: float | None = None, currency: str | None = None,
+                    minutes: float | None = None, submitted_at: str | None = None,
+                    notes: str | None = None) -> dict:
+        finding = self.get_finding(finding_id)
+        if not finding:
+            raise KeyError(f"no finding matching {finding_id!r}")
+        if status is not None and status not in OUTCOME_STATUSES:
+            raise ValueError(f"status must be one of {OUTCOME_STATUSES}")
+        row = self.conn.execute("SELECT * FROM outcomes WHERE finding_id=?",
+                                (finding.id,)).fetchone()
+        current = dict(row) if row else {
+            "finding_id": finding.id, "status": "unknown", "bounty": None,
+            "currency": None, "minutes": None, "submitted_at": None,
+            "outcome_at": None, "notes": None,
+        }
+        merged = dict(current)
+        for key, value in (("status", status), ("bounty", bounty), ("currency", currency),
+                           ("minutes", minutes), ("submitted_at", submitted_at),
+                           ("notes", notes)):
+            if value is not None:
+                merged[key] = value
+        merged["finding_id"] = finding.id
+        merged["updated_at"] = now_iso()
+        if merged["status"] != "unknown" and not merged["submitted_at"]:
+            merged["submitted_at"] = now_iso()[:10]
+        if merged["status"] not in ("unknown", None) and not merged["outcome_at"]:
+            merged["outcome_at"] = now_iso()[:10]
+        self.conn.execute(
+            "INSERT OR REPLACE INTO outcomes (finding_id, status, bounty, currency, minutes, "
+            "submitted_at, outcome_at, notes, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (merged["finding_id"], merged["status"], merged["bounty"], merged["currency"],
+             merged["minutes"], merged["submitted_at"], merged["outcome_at"],
+             merged["notes"], merged["updated_at"]))
+        self.conn.commit()
+        return merged
+
+    def get_outcome(self, finding_id: str) -> dict | None:
+        finding = self.get_finding(finding_id)
+        if not finding:
+            return None
+        row = self.conn.execute("SELECT * FROM outcomes WHERE finding_id=?",
+                                (finding.id,)).fetchone()
+        if not row:
+            return {"finding_id": finding.id, "status": "unknown", "bounty": None,
+                    "currency": None, "minutes": None, "submitted_at": None,
+                    "outcome_at": None, "notes": None, "updated_at": None}
+        return dict(row)
+
+    def outcome_rows(self, program: str | None = None) -> list[dict]:
+        """Every finding with its run program and optional outcome — the metrics base."""
+        q = ("SELECT f.id, f.title, f.bug_class, f.severity, f.status AS finding_status, "
+             "r.program, o.status, o.bounty, o.currency, o.minutes, o.submitted_at, "
+             "o.outcome_at, o.notes "
+             "FROM findings f LEFT JOIN runs r ON r.id = f.run_id "
+             "LEFT JOIN outcomes o ON o.finding_id = f.id")
+        args: tuple = ()
+        if program:
+            q += " WHERE r.program=?"
+            args = (program,)
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
 
     def stats(self) -> dict:
         def one(sql: str, *a):
