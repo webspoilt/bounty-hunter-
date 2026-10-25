@@ -180,12 +180,12 @@ def _write_scenario(create: HarEntry, object_id: str, mutation: HarEntry,
     steps = [_create_step(create, object_path, warnings)]
     if read is not None and 200 <= read.status < 300:
         steps.append({"id": "owner_read", "role": "A", "method": "GET",
-                      "path": _with_placeholder(read.url, object_id)})
+                      "path": _with_placeholder(_path(read.url), object_id)})
     steps.append({"id": "attack_write", "role": "B", "method": mutation.method,
-                  "path": _with_placeholder(mutation.url, object_id), "json": marked})
+                  "path": _with_placeholder(_path(mutation.url), object_id), "json": marked})
     verify = read if read is not None else mutation
     steps.append({"id": "owner_verify", "role": "A", "method": "GET",
-                  "path": _with_placeholder(verify.url, object_id)})
+                  "path": _with_placeholder(_path(verify.url), object_id)})
     scenario = {
         "name": f"proposed-write-{object_id}",
         "base_url": _origin(create.url),
@@ -195,7 +195,7 @@ def _write_scenario(create: HarEntry, object_id: str, mutation: HarEntry,
     }
     if delete is not None:
         scenario["cleanup"] = [{"role": "A", "method": "DELETE",
-                                "path": _with_placeholder(delete.url, object_id)}]
+                                "path": _with_placeholder(_path(delete.url), object_id)}]
     else:
         warnings.append("no captured delete; the run may leave a test resource behind")
     return scenario

@@ -70,7 +70,7 @@ class H1Client:
             raise H1Error(
                 f"program {handle!r} returned no structured scopes. The public API only exposes "
                 "scope for programs you have joined. Add the scope manually instead:\n"
-                f"  bb scope import --program {handle} --from file data/scopes/{handle}.json")
+                f"  bb scope import --program {handle} --from file --file data/scopes/{handle}.json")
         attrs = data.get("attributes") or {}
         scope = Scope.from_h1_structured(handle, entries)
         scope.imported_at = attrs.get("updated_at") or scope.imported_at

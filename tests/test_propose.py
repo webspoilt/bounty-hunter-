@@ -66,6 +66,7 @@ def test_propose_read_and_write(tmp_path):
     create = next(s for s in write["steps"] if s["id"] == "create")
     assert create["extract"] == {"item_id": "$.data.id"}
     attack = next(s for s in write["steps"] if s["id"] == "attack_write")
+    assert attack["path"].startswith("/")
     assert "${item_id}" in attack["path"]
     assert attack["json"]["name"] == "${marker}"
     assert write["cleanup"][0]["method"] == "DELETE"

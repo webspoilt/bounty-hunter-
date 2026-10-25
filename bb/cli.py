@@ -46,7 +46,7 @@ def _scope_or_die(program: str) -> Scope:
     if not path.exists():
         raise SystemExit(f"no scope for {program!r}. import it first:\n"
                          f"  bb scope import --program {program} --from h1\n"
-                         f"  bb scope import --program {program} --from file scope.json")
+                         f"  bb scope import --program {program} --from file --file scope.json")
     return Scope.load(path)
 
 
