@@ -810,7 +810,9 @@ def build_parser() -> argparse.ArgumentParser:
     oc.add_argument("--bounty", type=float)
     oc.add_argument("--currency")
     oc.add_argument("--minutes", type=float)
-    oc.add_argument("--submitted")
+    oc.add_argument("--submitted",
+                    help="date the report was actually submitted (required for "
+                         "duplicate/informative/rejected to count as submitted)")
     oc.add_argument("--notes")
     oc.add_argument("--program")
     oc.add_argument("--list", action="store_true")

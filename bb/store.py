@@ -324,7 +324,10 @@ class Store:
                 merged[key] = value
         merged["finding_id"] = finding.id
         merged["updated_at"] = now_iso()
-        if merged["status"] != "unknown" and not merged["submitted_at"]:
+        # Only acceptance implies the report was actually submitted. A duplicate can be
+        # detected before submitting, and informative/rejected need the real date passed in;
+        # auto-stamping those would inflate the metrics' "submitted" count.
+        if merged["status"] == "accepted" and not merged["submitted_at"]:
             merged["submitted_at"] = now_iso()[:10]
         if merged["status"] not in ("unknown", None) and not merged["outcome_at"]:
             merged["outcome_at"] = now_iso()[:10]

@@ -18,11 +18,31 @@ def test_outcome_roundtrip_and_merge(tmp_path):
 
     out = store.set_outcome(f.id, status="accepted", bounty=500, currency="INR", minutes=90)
     assert out["status"] == "accepted"
-    assert out["submitted_at"]  # auto-filled
+    assert out["submitted_at"]  # acceptance implies a submission
     # updating one field preserves the others
     out = store.set_outcome(f.id, notes="paid")
     assert out["bounty"] == 500 and out["currency"] == "INR" and out["minutes"] == 90
     assert store.get_outcome(f.id)["notes"] == "paid"
+
+
+def test_only_accepted_auto_stamps_submission(tmp_path):
+    store = Store(tmp_path / "db.sqlite")
+    run = store.start_run("acme")
+    f = finding("one")
+    store.add_finding(f, run)
+
+    out = store.set_outcome(f.id, status="informative", minutes=15)
+    assert out["submitted_at"] is None
+    assert collect(store)["totals"]["submitted"] == 0
+    assert collect(store)["totals"]["informative"] == 1
+
+    out = store.set_outcome(f.id, status="duplicate", minutes=5)
+    assert out["submitted_at"] is None
+    assert collect(store)["totals"]["submitted"] == 0
+
+    out = store.set_outcome(f.id, status="duplicate", submitted_at="2026-10-01")
+    assert out["submitted_at"] == "2026-10-01"
+    assert collect(store)["totals"]["submitted"] == 1
 
 
 def test_outcome_validation(tmp_path):
@@ -52,6 +72,7 @@ def test_metrics_acceptance_duplicates_and_bounty_per_hour(tmp_path):
     assert t["findings"] == 3
     assert t["accepted"] == 1 and t["duplicate"] == 1 and t["unknown"] == 1
     assert t["decided"] == 2
+    assert t["submitted"] == 1          # accepted stamps; duplicate alone does not
     assert t["acceptance_rate"] == 0.5
     assert t["duplicate_rate"] == 0.5
     assert t["bounty"] == 500

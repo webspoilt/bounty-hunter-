@@ -6,7 +6,7 @@
 
 [![tests](https://img.shields.io/github/actions/workflow/status/webspoilt/bounty-hunter-/tests.yml?branch=main&style=flat-square&label=tests)](https://github.com/webspoilt/bounty-hunter-/actions/workflows/tests.yml)
 ![python](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?style=flat-square&logo=python&logoColor=white)
-![pytest](https://img.shields.io/badge/pytest-135%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-136%20passing-0A9EDC?style=flat-square&logo=pytest&logoColor=white)
 [![scope](https://img.shields.io/badge/scope-deny--by--default-10b981?style=flat-square)](bb/scope.py)
 [![submission](https://img.shields.io/badge/submission-human--only-ef4444?style=flat-square)](bb/gate.py)
 ![deps](https://img.shields.io/badge/deps-httpx%20only-22d3ee?style=flat-square)
@@ -30,7 +30,7 @@ and stops before submission.</em>
 > not. **(iii)** Reports are generated from redacted evidence and are never submitted
 > automatically. On an instrumented OWASP Juice Shop lab, 10/10 adversarial scope-bypass inputs
 > are refused, a 53-request hunt recovers a high-confidence cross-account IDOR in 11.8 s, the
-> generated report passes an independent seven-question triage gate, and 135 tests run in ≈5 s
+> generated report passes an independent seven-question triage gate, and 136 tests run in ≈5 s
 > without network access. Beyond stateless replay, an authenticated HAR seeds a real endpoint
 > inventory, a declarative scenario runner tests create-as-A/cross-mutate-as-B flows, a proposer
 > turns captured traffic into reviewable drafts, and outcome metrics connect findings to accepted
@@ -87,7 +87,7 @@ stored evidence.
 | **Source audit** | Companion Cloudflare skill (vendored, MIT): six phases, schema + Node validators |
 | **Investigation loop** | HAR import → reviewable scenario proposals → stateful runs → outcome metrics |
 | **Stack** | Python 3.11+, `httpx`, SQLite, optional Ollama, optional Claude-BugHunter |
-| **Tests** | 135, no network, ≈5 s; CI on Python 3.11 and 3.12 |
+| **Tests** | 136, no network, ≈5 s; CI on Python 3.11 and 3.12 |
 
 ## 3 · Safety model
 
@@ -347,6 +347,12 @@ the bounty, minutes invested, and dates. `bb metrics` derives acceptance rate, d
 bounty per hour, and breakdowns by class and program. Unknown outcomes stay unknown — they are
 not silently counted as failures.
 
+`submitted_at` is stamped automatically only for `accepted`, because acceptance implies a real
+submission. For `duplicate`, `informative`, and `rejected`, pass `--submitted YYYY-MM-DD` when the
+report actually left the machine; otherwise the outcome is recorded and decided, but it is not
+counted in the `submitted` metric. A duplicate can be found before submitting, and an informative
+triage note is not a submission.
+
 ## 6 · Evaluation
 
 **Setup.** Reference machine: Windows, Python 3.12.10, `httpx` 0.28.1, local Ollama
@@ -355,7 +361,7 @@ This is a lab evaluation, not a benchmark against live programs; see §9.
 
 | # | Experiment | Measurement | Result |
 |---|---|---|---|
-| **E1** | Unit/integration suite | 135 tests, no network | **135/135 pass**, 3.3–4.9 s |
+| **E1** | Unit/integration suite | 136 tests, no network | **136/136 pass**, 3.3–4.9 s |
 | **E2** | Scope predicate, adversarial inputs | 10 attacks + 4 controls | **10/10 denied, 4/4 allowed** |
 | **E3** | Dry-run planning | full hunt, zero packets | **29 requests planned, 0 sent** |
 | **E4** | Lab hunt, two roles | Juice Shop, rate 6 req/s | **53 requests, 64 endpoints, 11.8 s** |
@@ -537,7 +543,7 @@ recon is passive; without ARTEX nothing changes.
 `bb hunt` measures a deployed target; it cannot see the code. When you can read the source
 (your own service, an open-source program, a scope that includes a repository), the repo
 vendors Cloudflare's [security-audit skill](https://github.com/cloudflare/security-audit-skill)
-at commit `c1c8a8c1471359fb0e188eeaff69b8e8db6564a8` (MIT; see
+at commit `c1c8a8c1471369fb0e188eeaff69b8e8db6564a8` (MIT; see
 [`skills/security-audit/NOTICE.md`](skills/security-audit/NOTICE.md)). It runs a six-phase,
 coverage-led audit with independent verification and two machine-checkable artifacts:
 `findings.json` (against `report-schema.json`) and `coverage-ledger.json`.
@@ -592,7 +598,7 @@ git clone https://github.com/webspoilt/bounty-hunter-.git
 cd bounty-hunter-
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-python -m pytest -q          # 135 passed, no network
+python -m pytest -q          # 136 passed, no network
 python -m bb integrations    # optional local stack
 ```
 
@@ -600,7 +606,7 @@ Repository map:
 
 ```
 bb/            implementation (scope, http, checks, report, store, har, propose, scenario, metrics, cli)
-tests/         135 pytest cases: no network, MockTransport for HTTP
+tests/         136 pytest cases: no network, MockTransport for HTTP
 skills/        vendored Cloudflare security-audit skill (MIT): docs, schema, validators
 examples/      scenario examples + the stateful format
 assets/        banner
