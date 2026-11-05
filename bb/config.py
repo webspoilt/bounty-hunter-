@@ -24,7 +24,7 @@ H1_TOKEN = os.environ.get("H1_TOKEN", "")
 H1_API = "https://api.hackerone.com/v1"
 
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
-MODEL = os.environ.get("BB_MODEL", "qwen2.5:3b-instruct-q4_K_M")
+MODEL = os.environ.get("BB_MODEL", "freehuntx/qwen3-coder:8b")
 EMBED_MODEL = os.environ.get("BB_EMBED_MODEL", "nomic-embed-text")
 
 ARTEX_URL = os.environ.get("ARTEX_URL", "http://127.0.0.1:8787")
