@@ -1,0 +1,558 @@
+"""SQLite store: runs, assets, endpoints, exchanges, scope audit, findings, queue.
+
+The scope audit table is the point: every request attempt, allowed *or refused*, is a
+row. The old DB could only ever record "ALLOW".
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from pathlib import Path
+
+from bb.config import DB_PATH, now_iso
+from bb.models import Evidence, Exchange, Finding, sev_rank
+from bb import normalize
+
+SCHEMA = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS runs (
+    id TEXT PRIMARY KEY, program TEXT NOT NULL, target TEXT, started_at TEXT NOT NULL,
+    ended_at TEXT, scope_fingerprint TEXT, meta TEXT
+);
+CREATE TABLE IF NOT EXISTS assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, host TEXT NOT NULL,
+    url TEXT, status INTEGER, server TEXT, title TEXT, tech TEXT, source TEXT,
+    created_at TEXT NOT NULL, UNIQUE(run_id, host, url)
+);
+CREATE TABLE IF NOT EXISTS endpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, url TEXT NOT NULL,
+    method TEXT NOT NULL, host TEXT NOT NULL, path TEXT, source TEXT,
+    params TEXT, auth_hint TEXT, created_at TEXT NOT NULL,
+    UNIQUE(run_id, method, url)
+);
+CREATE TABLE IF NOT EXISTS parameters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, host TEXT, template TEXT,
+    name TEXT NOT NULL, kind TEXT, examples TEXT, source TEXT, created_at TEXT NOT NULL,
+    UNIQUE(run_id, host, template, name)
+);
+CREATE TABLE IF NOT EXISTS routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, host TEXT, method TEXT,
+    template TEXT NOT NULL, sample_url TEXT, source TEXT, hits INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+    UNIQUE(run_id, host, method, template)
+);
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY, run_id TEXT, kind TEXT NOT NULL, target TEXT NOT NULL,
+    fingerprint TEXT NOT NULL UNIQUE, state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0, result TEXT, created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS exchanges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, tool TEXT, method TEXT, url TEXT,
+    status INTEGER, req_headers TEXT, req_body TEXT, resp_headers TEXT, resp_body TEXT,
+    duration_ms INTEGER, created_at TEXT NOT NULL, payload_hash TEXT UNIQUE
+);
+CREATE TABLE IF NOT EXISTS scope_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, target TEXT, verdict TEXT NOT NULL,
+    reason TEXT, host TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS findings (
+    id TEXT PRIMARY KEY, run_id TEXT, title TEXT NOT NULL, bug_class TEXT,
+    severity TEXT, confidence TEXT, status TEXT, host TEXT, url TEXT,
+    summary TEXT, impact TEXT, remediation TEXT, steps TEXT, evidence TEXT,
+    meta TEXT, created_at TEXT NOT NULL, report_path TEXT
+);
+CREATE TABLE IF NOT EXISTS queue (
+    id TEXT PRIMARY KEY, finding_id TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
+    queued_at TEXT NOT NULL, decided_at TEXT, channel TEXT
+);
+CREATE TABLE IF NOT EXISTS outcomes (
+    finding_id TEXT PRIMARY KEY, status TEXT NOT NULL, bounty REAL, currency TEXT,
+    minutes REAL, submitted_at TEXT, outcome_at TEXT, notes TEXT, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
+CREATE INDEX IF NOT EXISTS idx_queue_state ON queue(state);
+CREATE INDEX IF NOT EXISTS idx_endpoints_run ON endpoints(run_id);
+"""
+
+OUTCOME_STATUSES = ("accepted", "duplicate", "informative", "rejected", "unknown")
+
+
+def _hash_payload(run_id: str | None, tool: str, method: str, url: str, status: int,
+                  body: str) -> str:
+    import hashlib
+    blob = json.dumps([run_id, tool, method, url, status, body], sort_keys=False)
+    return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
+
+
+class Store:
+    def __init__(self, path: str | Path = DB_PATH):
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(self.path, timeout=30)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(SCHEMA)
+
+    def close(self) -> None:
+        self.conn.close()
+
+    # ---------- runs ----------
+
+    def start_run(self, program: str, target: str = "", scope_fingerprint: str = "",
+                  meta: dict | None = None) -> str:
+        run_id = uuid.uuid4().hex[:12]
+        self.conn.execute(
+            "INSERT INTO runs (id, program, target, started_at, scope_fingerprint, meta) "
+            "VALUES (?,?,?,?,?,?)",
+            (run_id, program, target, now_iso(), scope_fingerprint, json.dumps(meta or {})))
+        self.conn.commit()
+        return run_id
+
+    def finish_run(self, run_id: str, meta: dict | None = None) -> None:
+        row = self.conn.execute("SELECT meta FROM runs WHERE id=?", (run_id,)).fetchone()
+        merged = json.loads(row["meta"] or "{}") if row else {}
+        merged.update(meta or {})
+        self.conn.execute("UPDATE runs SET ended_at=?, meta=? WHERE id=?",
+                          (now_iso(), json.dumps(merged), run_id))
+        self.conn.commit()
+
+    def run(self, run_id: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
+        return dict(row) if row else None
+
+    def latest_run(self) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+    def finding_run(self, finding_id: str) -> str | None:
+        row = self.conn.execute("SELECT run_id FROM findings WHERE id=?",
+                                (finding_id,)).fetchone()
+        return row["run_id"] if row else None
+
+    # ---------- audit ----------
+
+    def audit_scope(self, run_id: str | None, target: str, verdict: str, reason: str,
+                    host: str = "") -> None:
+        self.conn.execute(
+            "INSERT INTO scope_audit (run_id, target, verdict, reason, host, created_at) "
+            "VALUES (?,?,?,?,?,?)", (run_id, target, verdict, reason, host, now_iso()))
+        self.conn.commit()
+
+    def audit_counts(self, run_id: str) -> dict:
+        rows = self.conn.execute(
+            "SELECT verdict, COUNT(*) n FROM scope_audit WHERE run_id=? GROUP BY verdict",
+            (run_id,)).fetchall()
+        return {r["verdict"]: r["n"] for r in rows}
+
+    # ---------- assets / endpoints ----------
+
+    def add_asset(self, run_id: str, host: str, url: str | None = None, status: int | None = None,
+                  server: str = "", title: str = "", tech: list | None = None,
+                  source: str = "") -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO assets (run_id, host, url, status, server, title, tech, "
+            "source, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (run_id, host, url, status, server, title, json.dumps(tech or []), source, now_iso()))
+        self.conn.commit()
+
+    def add_endpoint(self, run_id: str, url: str, method: str = "GET", host: str = "",
+                     path: str = "", source: str = "", params: list | None = None,
+                     auth_hint: str = "") -> None:
+        """Record an endpoint plus its normalized route and every query parameter.
+
+        Callers can stay dumb: passing a URL is enough for the store to derive the
+        host, the path template (`/api/users/{id}`), the route row, and one parameter
+        row per query name. `params` may still be supplied (HAR/Burp importers do).
+        """
+        from urllib.parse import urlsplit
+        method = method.upper()
+        host = host or (urlsplit(url).hostname or "")
+        path = path or (urlsplit(url).path or "/")
+        found = normalize.extract_params(url)
+        names = params if params is not None else [p["name"] for p in found]
+        self.conn.execute(
+            "INSERT OR IGNORE INTO endpoints (run_id, url, method, host, path, source, params, "
+            "auth_hint, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (run_id, url, method, host, path, source, json.dumps(names),
+             auth_hint, now_iso()))
+        self.record_route(run_id, url, method, source=source)
+        for p in found:
+            self.add_parameter(run_id, url, p["name"], p["kind"], p["examples"], source)
+        self.conn.commit()
+
+    def endpoints(self, run_id: str | None = None) -> list[dict]:
+        q = ("SELECT * FROM endpoints" if run_id is None else
+             "SELECT * FROM endpoints WHERE run_id=?") + " ORDER BY id"
+        rows = self.conn.execute(q, (() if run_id is None else (run_id,))).fetchall()
+        out = []
+        for r in rows:
+            rec = dict(r)
+            rec["params"] = json.loads(r["params"] or "[]")
+            rec["template"] = normalize.normalize_path(r["path"] or "/")
+            out.append(rec)
+        return out
+
+    # ---------- routes + parameters (stateful inventory) ----------
+
+    def record_route(self, run_id: str | None, url: str, method: str = "GET",
+                     source: str = "") -> str:
+        """Upsert a normalized route; returns the path template."""
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        template = normalize.normalize_path(parts.path or "/")
+        now = now_iso()
+        self.conn.execute(
+            "INSERT INTO routes (run_id, host, method, template, sample_url, source, hits, "
+            "first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(run_id, host, method, template) DO UPDATE SET "
+            "hits=routes.hits+1, last_seen=excluded.last_seen, sample_url=excluded.sample_url",
+            (run_id, host, method.upper(), template, url, source, 1, now, now))
+        self.conn.commit()
+        return template
+
+    def add_parameter(self, run_id: str | None, url: str, name: str, kind: str = "value",
+                      examples: list | None = None, source: str = "") -> None:
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        template = normalize.normalize_path(parts.path or "/")
+        self.conn.execute(
+            "INSERT INTO parameters (run_id, host, template, name, kind, examples, source, "
+            "created_at) VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(run_id, host, template, name) DO UPDATE SET "
+            "kind=excluded.kind, examples=excluded.examples",
+            (run_id, host, template, name[:120], kind,
+             json.dumps((examples or [])[:3]), source, now_iso()))
+        self.conn.commit()
+
+    def parameters(self, run_id: str | None = None, kind: str | None = None) -> list[dict]:
+        clauses, args = [], []
+        if run_id is not None:
+            clauses.append("run_id=?"); args.append(run_id)
+        if kind:
+            clauses.append("kind=?"); args.append(kind)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM parameters{where} ORDER BY host, template, name", args).fetchall()
+        return [dict(r) | {"examples": json.loads(r["examples"] or "[]")} for r in rows]
+
+    def routes(self, run_id: str | None = None) -> list[dict]:
+        q = ("SELECT * FROM routes" if run_id is None else
+             "SELECT * FROM routes WHERE run_id=?") + " ORDER BY hits DESC, host, template"
+        rows = self.conn.execute(q, (() if run_id is None else (run_id,))).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------- agent task ledger (deduplication across workers and runs) ----------
+
+    def task_claim(self, kind: str, target: str, run_id: str | None = None,
+                   fingerprint: str | None = None, max_attempts: int = 3,
+                   max_age_hours: float | None = None) -> bool:
+        """Claim a unit of work exactly once across every worker and every run.
+
+        Returns True only when this caller inserted the task, resurrected a failed
+        one, or re-claimed a ``done`` task older than ``max_age_hours``. A duplicate
+        fingerprint that is pending/running/done returns False, which is the whole
+        point: 50 workers cannot do the same job twice.
+        """
+        import hashlib
+        from datetime import datetime, timedelta, timezone
+
+        fp = fingerprint or hashlib.sha256(
+            f"{kind}|{target}".encode("utf-8", "replace")).hexdigest()[:20]
+        now = now_iso()
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO tasks (id, run_id, kind, target, fingerprint, state, "
+            "attempts, created_at, updated_at) VALUES (?,?,?,?,?, 'pending', 0, ?, ?)",
+            (fp, run_id, kind, target[:2000], fp, now, now))
+        if cur.rowcount == 0:
+            row = self.conn.execute(
+                "SELECT state, attempts, updated_at FROM tasks WHERE fingerprint=?",
+                (fp,)).fetchone()
+            if not row:
+                self.conn.commit()
+                return False
+            stale = False
+            if max_age_hours is not None and row["state"] == "done":
+                try:
+                    seen = datetime.fromisoformat(row["updated_at"])
+                    if seen.tzinfo is None:
+                        seen = seen.replace(tzinfo=timezone.utc)
+                    stale = datetime.now(timezone.utc) - seen > timedelta(hours=max_age_hours)
+                except (TypeError, ValueError):
+                    stale = True
+            if row["state"] not in ("failed", "skipped") and not stale:
+                self.conn.commit()
+                return False
+            if row["state"] in ("failed", "skipped") and row["attempts"] >= max_attempts:
+                self.conn.commit()
+                return False
+            if stale:
+                self.conn.execute(
+                    "UPDATE tasks SET attempts=0, result=NULL WHERE fingerprint=?", (fp,))
+        self.conn.execute(
+            "UPDATE tasks SET state='running', attempts=attempts+1, run_id=COALESCE(run_id, ?), "
+            "updated_at=? WHERE fingerprint=?", (run_id, now, fp))
+        self.conn.commit()
+        return True
+
+    def task_finish(self, fingerprint: str, state: str = "done", result: dict | None = None) -> None:
+        self.conn.execute(
+            "UPDATE tasks SET state=?, result=?, updated_at=? WHERE fingerprint=?",
+            (state, json.dumps(result or {}), now_iso(), fingerprint))
+        self.conn.commit()
+
+    def tasks(self, state: str | None = None, run_id: str | None = None) -> list[dict]:
+        clauses, args = [], []
+        if state:
+            clauses.append("state=?"); args.append(state)
+        if run_id:
+            clauses.append("run_id=?"); args.append(run_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM tasks{where} ORDER BY created_at", args).fetchall()
+        return [dict(r) | {"result": json.loads(r["result"] or "{}")} for r in rows]
+
+    def task_counts(self, run_id: str | None = None) -> dict:
+        q = "SELECT state, COUNT(*) n FROM tasks"
+        args: tuple = ()
+        if run_id:
+            q += " WHERE run_id=?"
+            args = (run_id,)
+        q += " GROUP BY state"
+        return {r["state"]: r["n"] for r in self.conn.execute(q, args).fetchall()}
+
+    def assets(self, run_id: str | None = None) -> list[dict]:
+        q = ("SELECT * FROM assets" if run_id is None else
+             "SELECT * FROM assets WHERE run_id=?") + " ORDER BY id"
+        rows = self.conn.execute(q, (() if run_id is None else (run_id,))).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------- exchanges ----------
+
+    def add_exchange(self, run_id: str | None, tool: str, ex: Exchange) -> bool:
+        h = _hash_payload(run_id, tool, ex.method, ex.url, ex.status, ex.response_body[:2000])
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO exchanges (run_id, tool, method, url, status, req_headers, "
+            "req_body, resp_headers, resp_body, duration_ms, created_at, payload_hash) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, tool, ex.method, ex.url, ex.status,
+             json.dumps(ex.request_headers), ex.request_body,
+             json.dumps(ex.response_headers), ex.response_body,
+             ex.duration_ms, ex.at, h))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    # ---------- findings ----------
+
+    def add_finding(self, finding: Finding, run_id: str | None = None) -> str:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO findings (id, run_id, title, bug_class, severity, confidence, "
+            "status, host, url, summary, impact, remediation, steps, evidence, meta, created_at, "
+            "report_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (finding.id, run_id, finding.title, finding.bug_class, finding.severity,
+             finding.confidence, finding.status, finding.host, finding.url, finding.summary,
+             finding.impact, finding.remediation, json.dumps(finding.steps),
+             json.dumps([e.to_dict() for e in finding.evidence]), json.dumps(finding.meta),
+             finding.created_at, finding.meta.get("report_path")))
+        self.conn.commit()
+        return finding.id
+
+    def set_report_path(self, finding_id: str, path: str) -> None:
+        self.conn.execute("UPDATE findings SET report_path=? WHERE id=?", (path, finding_id))
+        self.conn.commit()
+
+    def update_meta(self, finding_id: str, **kv) -> None:
+        row = self.conn.execute("SELECT meta FROM findings WHERE id=?", (finding_id,)).fetchone()
+        meta = json.loads(row["meta"] or "{}") if row else {}
+        meta.update(kv)
+        self.conn.execute("UPDATE findings SET meta=? WHERE id=?", (json.dumps(meta), finding_id))
+        self.conn.commit()
+
+    def exchanges(self, run_id: str, limit: int = 500) -> list[Exchange]:
+        rows = self.conn.execute(
+            "SELECT * FROM exchanges WHERE run_id=? ORDER BY id LIMIT ?", (run_id, limit)).fetchall()
+        return [Exchange(method=r["method"], url=r["url"], status=r["status"],
+                         request_headers=json.loads(r["req_headers"] or "{}"),
+                         request_body=r["req_body"] or "",
+                         response_headers=json.loads(r["resp_headers"] or "{}"),
+                         response_body=r["resp_body"] or "",
+                         duration_ms=r["duration_ms"] or 0, at=r["created_at"])
+                for r in rows]
+
+    def set_status(self, finding_id: str, status: str) -> None:
+        self.conn.execute("UPDATE findings SET status=? WHERE id=?", (status, finding_id))
+        self.conn.commit()
+
+    def get_finding(self, finding_id: str) -> Finding | None:
+        row = self.conn.execute("SELECT * FROM findings WHERE id LIKE ?",
+                                (finding_id + "%",)).fetchone()
+        if not row:
+            return None
+        return self._row_to_finding(row)
+
+    def find_duplicate(self, bug_class: str, url: str) -> Finding | None:
+        """Same bug on the same URL from an earlier run: refresh instead of duplicating."""
+        row = self.conn.execute(
+            "SELECT * FROM findings WHERE bug_class=? AND url=? AND status IN ('candidate','confirmed') "
+            "ORDER BY created_at DESC LIMIT 1", (bug_class, url)).fetchone()
+        return self._row_to_finding(row) if row else None
+
+    def findings(self, status: str | None = None, run_id: str | None = None,
+                 min_severity: str = "info") -> list[Finding]:
+        clauses, args = [], []
+        if status:
+            clauses.append("status=?"); args.append(status)
+        if run_id:
+            clauses.append("run_id=?"); args.append(run_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM findings{where} ORDER BY created_at DESC", args).fetchall()
+        out = [self._row_to_finding(r) for r in rows]
+        out = [f for f in out if sev_rank(f.severity) >= sev_rank(min_severity)]
+        out.sort(key=lambda f: (-sev_rank(f.severity), f.created_at))
+        return out
+
+    @staticmethod
+    def _row_to_finding(row: sqlite3.Row) -> Finding:
+        return Finding.from_dict({
+            "id": row["id"], "title": row["title"], "bug_class": row["bug_class"],
+            "severity": row["severity"], "confidence": row["confidence"],
+            "status": row["status"], "host": row["host"], "url": row["url"],
+            "summary": row["summary"], "impact": row["impact"],
+            "remediation": row["remediation"], "steps": json.loads(row["steps"] or "[]"),
+            "evidence": json.loads(row["evidence"] or "[]"),
+            "meta": json.loads(row["meta"] or "{}"), "created_at": row["created_at"],
+        })
+
+    # ---------- approval queue ----------
+
+    def queue_add(self, finding_id: str, channel: str = "cli") -> tuple[str, bool]:
+        existing = self.conn.execute(
+            "SELECT id FROM queue WHERE finding_id=?", (finding_id,)).fetchone()
+        if existing:
+            return existing["id"], False
+        qid = uuid.uuid4().hex[:10]
+        self.conn.execute(
+            "INSERT INTO queue (id, finding_id, state, queued_at, channel) VALUES (?,?,?,?,?)",
+            (qid, finding_id, "pending", now_iso(), channel))
+        self.conn.commit()
+        return qid, True
+
+    def queue(self, state: str | None = "pending") -> list[dict]:
+        q = ("SELECT q.*, f.title, f.severity, f.bug_class, f.url, f.report_path "
+             "FROM queue q JOIN findings f ON f.id = q.finding_id")
+        args: tuple = ()
+        if state:
+            q += " WHERE q.state=?"
+            args = (state,)
+        q += " ORDER BY q.queued_at"
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def decide(self, queue_id: str, approved: bool) -> dict:
+        row = self.conn.execute("SELECT * FROM queue WHERE id LIKE ?",
+                                (queue_id + "%",)).fetchone()
+        if not row:
+            raise KeyError(f"no queue item matching {queue_id!r}")
+        if row["state"] != "pending":
+            raise ValueError(f"queue item {row['id']} already {row['state']}")
+        state = "approved" if approved else "rejected"
+        self.conn.execute("UPDATE queue SET state=?, decided_at=? WHERE id=?",
+                          (state, now_iso(), row["id"]))
+        self.conn.execute("UPDATE findings SET status=? WHERE id=?",
+                          ("confirmed" if approved else "rejected", row["finding_id"]))
+        self.conn.commit()
+        out = dict(row); out["state"] = state
+        return out
+
+    # ---------- outcomes (the feedback loop) ----------
+
+    def set_outcome(self, finding_id: str, *, status: str | None = None,
+                    bounty: float | None = None, currency: str | None = None,
+                    minutes: float | None = None, submitted_at: str | None = None,
+                    notes: str | None = None) -> dict:
+        finding = self.get_finding(finding_id)
+        if not finding:
+            raise KeyError(f"no finding matching {finding_id!r}")
+        if status is not None and status not in OUTCOME_STATUSES:
+            raise ValueError(f"status must be one of {OUTCOME_STATUSES}")
+        row = self.conn.execute("SELECT * FROM outcomes WHERE finding_id=?",
+                                (finding.id,)).fetchone()
+        current = dict(row) if row else {
+            "finding_id": finding.id, "status": "unknown", "bounty": None,
+            "currency": None, "minutes": None, "submitted_at": None,
+            "outcome_at": None, "notes": None,
+        }
+        merged = dict(current)
+        for key, value in (("status", status), ("bounty", bounty), ("currency", currency),
+                           ("minutes", minutes), ("submitted_at", submitted_at),
+                           ("notes", notes)):
+            if value is not None:
+                merged[key] = value
+        merged["finding_id"] = finding.id
+        merged["updated_at"] = now_iso()
+        # Only acceptance implies the report was actually submitted. A duplicate can be
+        # detected before submitting, and informative/rejected need the real date passed in;
+        # auto-stamping those would inflate the metrics' "submitted" count.
+        if merged["status"] == "accepted" and not merged["submitted_at"]:
+            merged["submitted_at"] = now_iso()[:10]
+        if merged["status"] not in ("unknown", None) and not merged["outcome_at"]:
+            merged["outcome_at"] = now_iso()[:10]
+        self.conn.execute(
+            "INSERT OR REPLACE INTO outcomes (finding_id, status, bounty, currency, minutes, "
+            "submitted_at, outcome_at, notes, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (merged["finding_id"], merged["status"], merged["bounty"], merged["currency"],
+             merged["minutes"], merged["submitted_at"], merged["outcome_at"],
+             merged["notes"], merged["updated_at"]))
+        self.conn.commit()
+        return merged
+
+    def get_outcome(self, finding_id: str) -> dict | None:
+        finding = self.get_finding(finding_id)
+        if not finding:
+            return None
+        row = self.conn.execute("SELECT * FROM outcomes WHERE finding_id=?",
+                                (finding.id,)).fetchone()
+        if not row:
+            return {"finding_id": finding.id, "status": "unknown", "bounty": None,
+                    "currency": None, "minutes": None, "submitted_at": None,
+                    "outcome_at": None, "notes": None, "updated_at": None}
+        return dict(row)
+
+    def outcome_rows(self, program: str | None = None) -> list[dict]:
+        """Every finding with its run program and optional outcome — the metrics base."""
+        q = ("SELECT f.id, f.title, f.bug_class, f.severity, f.status AS finding_status, "
+             "r.program, o.status, o.bounty, o.currency, o.minutes, o.submitted_at, "
+             "o.outcome_at, o.notes "
+             "FROM findings f LEFT JOIN runs r ON r.id = f.run_id "
+             "LEFT JOIN outcomes o ON o.finding_id = f.id")
+        args: tuple = ()
+        if program:
+            q += " WHERE r.program=?"
+            args = (program,)
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def stats(self) -> dict:
+        def one(sql: str, *a):
+            r = self.conn.execute(sql, a).fetchone()
+            return r[0] if r else 0
+        by_status = {r["status"]: r["n"] for r in self.conn.execute(
+            "SELECT status, COUNT(*) n FROM findings GROUP BY status")}
+        return {
+            "findings": one("SELECT COUNT(*) FROM findings"),
+            "by_status": by_status,
+            "pending_approvals": one("SELECT COUNT(*) FROM queue WHERE state='pending'"),
+            "endpoints": one("SELECT COUNT(*) FROM endpoints"),
+            "routes": one("SELECT COUNT(*) FROM routes"),
+            "parameters": one("SELECT COUNT(*) FROM parameters"),
+            "assets": one("SELECT COUNT(*) FROM assets"),
+            "exchanges": one("SELECT COUNT(*) FROM exchanges"),
+            "tasks": one("SELECT COUNT(*) FROM tasks"),
+        }
+
+    # deterministic finding expansion for tests/inspection
+    @staticmethod
+    def evidence_of(row: dict) -> list[Evidence]:
+        return [Evidence.from_dict(e) for e in (row.get("evidence") or [])]

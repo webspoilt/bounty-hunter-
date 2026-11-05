@@ -1,0 +1,40 @@
+{
+  "name": "object-write-idor",
+  "base_url": "https://app.example.com",
+  "rate": 2.0,
+  "steps": [
+    {
+      "id": "create",
+      "role": "A",
+      "method": "POST",
+      "path": "/api/items",
+      "json": {"name": "bb-disposable"},
+      "expect": {"status": [200, 201]},
+      "extract": {"item_id": "$.id"}
+    },
+    {
+      "id": "attack_write",
+      "role": "B",
+      "method": "PATCH",
+      "path": "/api/items/${item_id}",
+      "json": {"name": "${marker}"}
+    },
+    {
+      "id": "owner_verify",
+      "role": "A",
+      "method": "GET",
+      "path": "/api/items/${item_id}"
+    }
+  ],
+  "claim": {
+    "type": "idor_write",
+    "mutate": "attack_write",
+    "verify": "owner_verify",
+    "owner": "A",
+    "attacker": "B",
+    "marker": "${marker}"
+  },
+  "cleanup": [
+    {"role": "A", "method": "DELETE", "path": "/api/items/${item_id}"}
+  ]
+}
