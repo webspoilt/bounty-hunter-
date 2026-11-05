@@ -724,6 +724,105 @@ def cmd_telegram(args) -> int:
     return 0
 
 
+def cmd_auto(args) -> int:
+    from bb.auto import AutoHunter, AutoHunterConfig
+    _require_not_stopped()
+    scope = _scope_or_die(args.program)
+    accounts = load_accounts(accounts_path(args.accounts)) if args.accounts else None
+    entries = args.entry or [f"https://{h}" for h in scope.apex_domains() if not h.startswith("*")]
+    if not entries:
+        raise SystemExit("no entry URLs found; supply via --entry https://target.com")
+
+    cfg = AutoHunterConfig(
+        program=args.program,
+        scope=scope,
+        entry_urls=entries,
+        accounts=accounts,
+        rate=args.rate,
+        max_requests=args.max_requests,
+        timeout=args.timeout,
+        proxy=args.proxy,
+        dry_run=args.dry_run,
+        cbh=args.cbh,
+        llm=args.llm,
+        workers=args.workers,
+        run_waf_probe=not args.no_waf,
+        cve_match=not args.no_cve,
+        ai_analysis=not args.no_ai,
+        queue=not args.no_queue,
+    )
+    hunter = AutoHunter(cfg)
+    res = hunter.run()
+    print("\nAutonomous Run Summary:")
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_dashboard(args) -> int:
+    from bb.ui import run_dashboard
+    run_dashboard(host=args.host, port=args.port, open_browser=args.open)
+    return 0
+
+
+def cmd_cve(args) -> int:
+    from bb import cve
+    if args.action == "import":
+        res = cve.import_file(args.file)
+        print(f"imported {res['records']} records ({res['added']} new, {res['total']} total in index)")
+        return 0
+    if args.action == "query":
+        idx = cve.CveIndex()
+        hits = idx.query(args.query, k=args.limit)
+        print(cve.format_hits(hits))
+        return 0
+    if args.action == "stats":
+        idx = cve.CveIndex()
+        print(json.dumps(idx.stats(), indent=2))
+        return 0
+    return 1
+
+
+def cmd_learn(args) -> int:
+    from bb import learn
+    store = Store()
+    if args.action == "report":
+        rep = learn.learning_report(store, program=args.program)
+        if args.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            print(learn.format_report(rep))
+        return 0
+    if args.action == "export":
+        res = learn.export_dataset(store, path=args.out, program=args.program)
+        print(f"exported {res['rows']} SFT records to {res['path']}")
+        print("\n" + learn.training_hint(res['path']))
+        return 0
+    return 1
+
+
+def cmd_waf(args) -> int:
+    from bb import waf
+    _require_not_stopped()
+    scope = _scope_or_die(args.program)
+    client = ScopedClient(scope, proxy=args.proxy, dry_run=args.dry_run, tool="waf")
+    print(f"[*] Probing parameter normalization resilience on {args.url} ...")
+    res = waf.probe_url(client, args.url, param=args.param)
+    print(waf.format_report(res))
+    return 0
+
+
+def cmd_analyze(args) -> int:
+    from bb import analyze
+    store = Store()
+    finding = store.get_finding(args.finding)
+    if not finding:
+        raise SystemExit(f"no finding found matching {args.finding!r}")
+    res = analyze.analyze(finding, use_llm=args.llm)
+    print(analyze.format_analysis(res))
+    return 0
+
+
+
 # ============================================================
 # parser
 # ============================================================
@@ -929,6 +1028,66 @@ def build_parser() -> argparse.ArgumentParser:
     vv.add_argument("--proxy")
     vv.add_argument("--dry-run", action="store_true", help="offline audit only, no login/replay")
     vv.set_defaults(func=cmd_verify)
+
+    ui = sub.add_parser("dashboard", help="launch local web dashboard and triage UI")
+    ui.add_argument("--host", default="127.0.0.1", help="dashboard bind host")
+    ui.add_argument("--port", type=int, default=8888, help="dashboard port")
+    ui.add_argument("--open", action="store_true", help="open web browser on start")
+    ui.set_defaults(func=cmd_dashboard)
+
+    au = sub.add_parser("auto", help="fully autonomous bug hunter loop (recon -> checks -> verify -> triage)")
+    au.add_argument("--program", required=True)
+    au.add_argument("--entry", action="append", help="entry URL (can be specified multiple times)")
+    au.add_argument("--accounts", help="accounts JSON file for differential auth testing")
+    au.add_argument("--rate", type=float, default=2.0, help="request rate limit (req/s)")
+    au.add_argument("--max-requests", type=int, default=200, help="maximum request budget")
+    au.add_argument("--timeout", type=float, default=15.0)
+    au.add_argument("--proxy")
+    au.add_argument("--dry-run", action="store_true")
+    au.add_argument("--cbh", action="store_true")
+    au.add_argument("--llm", action="store_true")
+    au.add_argument("--workers", type=int, default=4)
+    au.add_argument("--no-waf", action="store_true")
+    au.add_argument("--no-cve", action="store_true")
+    au.add_argument("--no-ai", action="store_true")
+    au.add_argument("--no-queue", action="store_true")
+    au.set_defaults(func=cmd_auto)
+
+    cv = sub.add_parser("cve", help="local CVE knowledge base (query, import, stats)")
+    csub = cv.add_subparsers(dest="action", required=True)
+    ci = csub.add_parser("import", help="import NVD or CISA-KEV JSON into local index")
+    ci.add_argument("--file", required=True)
+    ci.set_defaults(func=cmd_cve)
+    cq = csub.add_parser("query", help="query CVE index by product or tech stack")
+    cq.add_argument("query")
+    cq.add_argument("--limit", type=int, default=10)
+    cq.set_defaults(func=cmd_cve)
+    cs = csub.add_parser("stats", help="show CVE index statistics")
+    cs.set_defaults(func=cmd_cve)
+
+    ln = sub.add_parser("learn", help="continuous learning and QLoRA SFT dataset export")
+    lsub = ln.add_subparsers(dest="action", required=True)
+    lr = lsub.add_parser("report", help="show class priors and empirical learning report")
+    lr.add_argument("--program")
+    lr.add_argument("--json", action="store_true")
+    lr.set_defaults(func=cmd_learn)
+    le = lsub.add_parser("export", help="export human verdicts to QLoRA SFT JSONL format")
+    le.add_argument("--out", help="destination JSONL file")
+    le.add_argument("--program")
+    le.set_defaults(func=cmd_learn)
+
+    wf = sub.add_parser("waf", help="probe parameter normalization resilience (defensive canary)")
+    wf.add_argument("--program", required=True)
+    wf.add_argument("--url", required=True)
+    wf.add_argument("--param", help="specific parameter name to test")
+    wf.add_argument("--proxy")
+    wf.add_argument("--dry-run", action="store_true")
+    wf.set_defaults(func=cmd_waf)
+
+    az = sub.add_parser("analyze", help="AI response analysis and next test suggestion")
+    az.add_argument("finding", help="finding ID or prefix")
+    az.add_argument("--llm", action="store_true", help="use local Ollama model for deep analysis")
+    az.set_defaults(func=cmd_analyze)
     return p
 
 
