@@ -21,6 +21,8 @@ import hashlib
 import ipaddress
 import json
 import re
+import socket
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -78,6 +80,38 @@ def _is_ip(host: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+# ---------- DNS resolution pinning ----------
+
+_RESOLVE_TTL = 60.0
+_dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
+
+
+def resolve_host(host: str) -> tuple[str, ...]:
+    """Resolve a hostname to its addresses (cached briefly).
+
+    Raises OSError when the name does not resolve. The cache means repeated
+    requests inside one run do not hammer the resolver; matchups between a
+    hostname and its IPs are re-checked at most once per TTL.
+    """
+    now = time.monotonic()
+    hit = _dns_cache.get(host)
+    if hit and now - hit[0] < _RESOLVE_TTL:
+        return hit[1]
+    infos = socket.getaddrinfo(host, None)
+    ips: list[str] = []
+    for info in infos:
+        addr = info[4][0]
+        if addr and addr not in ips:
+            ips.append(addr)
+    _dns_cache[host] = (now, tuple(ips))
+    return tuple(ips)
+
+
+def clear_dns_cache() -> None:
+    """Forget cached resolutions (tests, or a long-running session after a zone change)."""
+    _dns_cache.clear()
 
 
 def normalize_host(host: str) -> str:
@@ -319,6 +353,54 @@ class Scope:
                                      host, port, path)
         return ScopeDecision(False, target, "no in-scope rule matches (deny by default)",
                              host, port, path)
+
+    def verify_resolution(self, absolute: str) -> ScopeDecision:
+        """Anti-rebinding guard: validate where a hostname actually resolves.
+
+        A hostname allow-list alone is not enough — a wildcard rule (`*.example.com`)
+        matched by an attacker-controlled subdomain can resolve to any machine. This
+        check refuses:
+          * hostname targets that do not resolve at all,
+          * wildcard matches that resolve to a non-public address (loopback, RFC1918,
+            link-local, ...), unless an explicit IP/CIDR in-scope rule covers it.
+        Exact (non-wildcard) domain/url rules may resolve internally: the operator
+        wrote that exact name, which is how lab targets like Juice Shop work.
+        Literal-IP targets were already matched against IP/CIDR rules by check().
+        """
+        host, port, path = parse_target(absolute)
+        if _is_ip(host):
+            return ScopeDecision(True, absolute,
+                                 "literal IP target: scope already matched it", host, port, path)
+        try:
+            ips = resolve_host(host)
+        except OSError as exc:
+            return ScopeDecision(False, absolute,
+                                 f"DNS resolution failed for {host}: {exc}", host, port, path)
+        if not ips:
+            return ScopeDecision(False, absolute,
+                                 f"DNS resolution failed for {host}: no addresses", host, port, path)
+        exact = any(r.kind in ("domain", "url") and not r.wildcard
+                    and r.matches(host, port, path) for r in self.in_rules)
+        problems: list[str] = []
+        for ip in ips:
+            try:
+                global_ip = ipaddress.ip_address(ip).is_global
+            except ValueError:
+                global_ip = False
+            if global_ip:
+                continue
+            covered = any(r.kind in ("ip", "cidr")
+                          and r.matches(ip, port, path) for r in self.in_rules)
+            if exact or covered:
+                continue
+            problems.append(ip)
+        if problems:
+            return ScopeDecision(
+                False, absolute,
+                f"{host} resolves to non-public address(es) {', '.join(problems)} while "
+                "covered only by a wildcard rule (DNS rebinding guard)", host, port, path)
+        return ScopeDecision(True, absolute,
+                             f"resolved {host} -> {', '.join(ips)}", host, port, path)
 
     def is_in_scope(self, target: str) -> bool:
         return self.check(target).allowed

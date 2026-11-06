@@ -1,6 +1,6 @@
-<div align="center">
+﻿<div align="center">
 
-<img src="assets/banner.svg" alt="bountybot — scope-gated bug-bounty pipeline" width="880">
+<img src="assets/banner.svg" alt="bountybot â€” scope-gated bug-bounty pipeline" width="880">
 
 <br>
 
@@ -30,18 +30,18 @@ and stops before submission.</em>
 > not. **(iii)** Reports are generated from redacted evidence and are never submitted
 > automatically. On an instrumented OWASP Juice Shop lab, 10/10 adversarial scope-bypass inputs
 > are refused, a 53-request hunt recovers a high-confidence cross-account IDOR in 11.8 s, the
-> generated report passes an independent seven-question triage gate, and 136 tests run in ≈5 s
+> generated report passes an independent seven-question triage gate, and 136 tests run in â‰ˆ5 s
 > without network access. Beyond stateless replay, an authenticated HAR seeds a real endpoint
 > inventory, a declarative scenario runner tests create-as-A/cross-mutate-as-B flows, a proposer
 > turns captured traffic into reviewable drafts, and outcome metrics connect findings to accepted
 > reports.
 
-**Keywords:** bug bounty · broken object-level authorization · scope enforcement · evidence
-provenance · human-in-the-loop · local LLMs · HackerOne
+**Keywords:** bug bounty Â· broken object-level authorization Â· scope enforcement Â· evidence
+provenance Â· human-in-the-loop Â· local LLMs Â· HackerOne
 
 ---
 
-## 1 · Introduction
+## 1 Â· Introduction
 
 A bug bounty is a *measurement problem* before it is an exploitation problem. The researcher
 must decide, for each pair of identities and each object, whether the server returned data it
@@ -73,7 +73,7 @@ stored evidence.
 | **C6** | A vendored source-audit contract (Cloudflare, MIT): six phases, JSON schema, and the upstream Node validators, kept separate from dynamic HTTP evidence. | [`skills/security-audit/`](skills/security-audit), [`bb/audit.py`](bb/audit.py) |
 | **C7** | An authenticated investigation loop: HAR traffic import, reviewable scenario proposals, stateful multi-role scenarios with explicit claims, and outcome metrics for acceptance, duplicates, and bounty per hour. | [`bb/har.py`](bb/har.py), [`bb/propose.py`](bb/propose.py), [`bb/scenario.py`](bb/scenario.py), [`bb/metrics.py`](bb/metrics.py) |
 
-## 2 · At a glance
+## 2 Â· At a glance
 
 | Property | Value |
 |---|---|
@@ -85,17 +85,17 @@ stored evidence.
 | **Reporting** | Deterministic H1 markdown; optional local-LLM polish with strict validation |
 | **Submission** | Manual. `bb submit` prints a curl payload and sends nothing |
 | **Source audit** | Companion Cloudflare skill (vendored, MIT): six phases, schema + Node validators |
-| **Investigation loop** | HAR import → reviewable scenario proposals → stateful runs → outcome metrics |
+| **Investigation loop** | HAR import â†’ reviewable scenario proposals â†’ stateful runs â†’ outcome metrics |
 | **Stack** | Python 3.11+, `httpx`, SQLite, optional Ollama, optional Claude-BugHunter |
-| **Tests** | 136, no network, ≈5 s; CI on Python 3.11 and 3.12 |
+| **Tests** | 136, no network, â‰ˆ5 s; CI on Python 3.11 and 3.12 |
 
-## 3 · Safety model
+## 3 Â· Safety model
 
 ### 3.1 Scope as a predicate
 
 A program is a pair of rule sets $R_{\mathrm{in}}, R_{\mathrm{out}}$. A rule $r$ either matches a
-resolved request URL $u$ — same host (and port, when specified), same path prefix for URL
-rules, or containment for CIDR rules — or it does not. The scope predicate is
+resolved request URL $u$ â€” same host (and port, when specified), same path prefix for URL
+rules, or containment for CIDR rules â€” or it does not. The scope predicate is
 
 $$
 \mathrm{in}(u) = \left(\exists r \in R_{\mathrm{in}} : r \models u\right) \wedge \neg\left(\exists r \in R_{\mathrm{out}} : r \models u\right)
@@ -107,16 +107,24 @@ with two clarifications that matter in practice:
 * `*` in the exclusion set means "nothing is in scope", not "ignore everything else".
 
 The host is normalised before matching (lowercase, punycode, trailing dot removed), and inputs
-that cannot be normalised unambiguously — percent-encoded hosts, backslashes, userinfo,
-non-HTTP schemes — are refused rather than guessed at.
+that cannot be normalised unambiguously â€” percent-encoded hosts, backslashes, userinfo,
+non-HTTP schemes â€” are refused rather than guessed at.
 
 ### 3.2 Invariants
 
 | ID | Invariant | Enforced at |
 |---|---|---|
-| **I1** | $\forall u: \mathrm{sent}(u) \Rightarrow \mathrm{in}(u)$ | `ScopedClient.request` — the only caller of `httpx.send` |
+| **I1** | $\forall u: \mathrm{sent}(u) \Rightarrow \mathrm{in}(u)$ | `ScopedClient.request` â€” the only caller of `httpx.send` |
 | **I2** | $\forall f: \text{submitted}(f) \Rightarrow \text{approved by human}(f)$ | No submission function exists; `bb submit` prints a command |
 | **I3** | Credentials are redacted *before* persistence | `redact_headers` / `redact_body` at capture |
+| **I4** | A hostname matching scope by name must resolve where the program approved | `Scope.verify_resolution` — DNS rebinding guard at `ScopedClient.request` |
+| **I5** | A single human action must stop every request in every process | `bb stop` marker file, checked per request (`scope_audit` verdict `STOP`) |
+
+I4 closes the rebinding hole in a pure-hostname allow-list: a wildcard match whose DNS
+resolves to a loopback/RFC1918/link-local address is refused (unless an explicit IP/CIDR
+rule or an exact operator-written domain covers it), unresolvable hosts are refused, and
+the resolved addresses are recorded in the audit row. I5 is the panic button:
+`bb stop [reason]` arms it, `bb resume` clears it, and both are recorded.
 
 The important design choice is that I1 holds on the **resolved** URL. `httpx` builds the request
 first, then the scope engine inspects the URL that will actually go on the wire:
@@ -152,16 +160,16 @@ legitimate controls. Measured, not asserted:
 [`tests/test_scope.py`](tests/test_scope.py) and by the live client in
 [`tests/test_http.py`](tests/test_http.py).
 
-## 4 · Architecture
+## 4 Â· Architecture
 
 ```mermaid
 flowchart LR
   H1["HackerOne API<br/>structured scopes"] --> S["Scope engine<br/>deny by default"]
   S --> C["ScopedClient<br/>per-request check"]
   C --> R["Recon<br/>passive + cbh"]
-  C --> K["Checks<br/>authz · unauth · CORS<br/>files · GraphQL · redirect"]
+  C --> K["Checks<br/>authz Â· unauth Â· CORS<br/>files Â· GraphQL Â· redirect"]
   R --> K
-  K --> E[("Evidence store<br/>SQLite · redacted")]
+  K --> E[("Evidence store<br/>SQLite Â· redacted")]
   E --> P["Report<br/>H1 markdown + cbh"]
   P --> Q{"Human queue<br/>UUID addressed"}
   Q -->|approve| M["Manual submission<br/>curl printed, never sent"]
@@ -171,7 +179,7 @@ flowchart LR
 | Module | Responsibility |
 |---|---|
 | [`bb/scope.py`](bb/scope.py) | Rule parsing/normalisation, predicate, H1 `asset_identifier` mapping, fingerprint |
-| [`bb/http.py`](bb/http.py) | Choke point: resolve → check → pace → retry → capture; dry-run |
+| [`bb/http.py`](bb/http.py) | Choke point: resolve â†’ check â†’ pace â†’ retry â†’ capture; dry-run |
 | [`bb/session.py`](bb/session.py) | Per-account login, token extraction, identity markers |
 | [`bb/recon.py`](bb/recon.py) | Entry HTML, robots, sitemaps, JS bundles, OpenAPI; guarded cbh delegation |
 | [`bb/checks.py`](bb/checks.py) | Six finding checks + informational hygiene; ownership rule |
@@ -181,11 +189,11 @@ flowchart LR
 | [`bb/h1.py`](bb/h1.py) [`bb/artex.py`](bb/artex.py) | H1 scope import + manual submission payload; ARTEX evidence push |
 
 Why one choke point rather than a shared helper: a helper can be bypassed by importing
-`httpx` directly, and it was — in an earlier iteration a protocol-relative path escaped the
+`httpx` directly, and it was â€” in an earlier iteration a protocol-relative path escaped the
 base URL because the check ran on the *input* target while the client resolved something else.
 The current design makes the check structurally unavoidable.
 
-## 5 · Method
+## 5 Â· Method
 
 ### 5.1 Observation
 
@@ -226,9 +234,9 @@ All are read-only and scope-gated.
 
 | Check | Positive signal | Guard against false positives |
 |---|---|---|
-| `unauth` | anonymous body ≈ authenticated body, contains identity/PII | requires the authenticated baseline |
+| `unauth` | anonymous body â‰ˆ authenticated body, contains identity/PII | requires the authenticated baseline |
 | `cors` | `ACAO` reflects a sent origin, or `*` with credentials | wildcard without credentials is ignored |
-| `exposed` | 200 **and** content signature (`[core]`, `SECRET_KEY=`, `CREATE TABLE`, …) | generic HTML 200 is rejected |
+| `exposed` | 200 **and** content signature (`[core]`, `SECRET_KEY=`, `CREATE TABLE`, â€¦) | generic HTML 200 is rejected |
 | `graphql` | introspection returns `__schema` | schema-shaped JSON required |
 | `open_redirect` | 3xx with attacker marker in `Location` | redirect is never followed |
 | `headers` | missing CSP/HSTS/XCTO | informational only; never queued |
@@ -246,8 +254,8 @@ Every exchange is captured as:
 
 Redaction is applied *before* the row is written: sensitive headers are replaced wholesale,
 JSON values under secret-looking keys are masked, bearer tokens/JWTs are removed from text, and
-sensitive query parameters are masked in the stored URL. Emails are deliberately preserved —
-they are the proof of cross-account access — and every report is reviewed by a human before it
+sensitive query parameters are masked in the stored URL. Emails are deliberately preserved â€”
+they are the proof of cross-account access â€” and every report is reviewed by a human before it
 leaves the machine.
 
 ### 5.5 Report generation
@@ -309,7 +317,7 @@ Claims are deterministic:
 the report carries only the attacker's exchange and no owner-side proof for the triager. The
 runner logs a warning when it is missing.
 
-A denied attacker (`401/402/403/404`) yields **enforced** — coverage, not a finding. Anything
+A denied attacker (`401/402/403/404`) yields **enforced** â€” coverage, not a finding. Anything
 else is `inconclusive`; no report is produced. Every non-GET/HEAD step requires `--allow-write`;
 cleanup runs only with that flag, only after the run, in the listed order, and only against
 resources the scenario created. `--dry-run` resolves and plans the sequence without sending.
@@ -318,24 +326,24 @@ resources the scenario created. `--dry-run` resolves and plans the sequence with
 
 `"schema": 2` keeps A, B and every v1 file working, and adds:
 
-- **`roles`** — `{"admin": {"account": 0}, "victim": {"account": 1}, "attacker": {"account": 2}}`
+- **`roles`** â€” `{"admin": {"account": 0}, "victim": {"account": 1}, "attacker": {"account": 2}}`
   (shorthand `"admin": 0` is accepted). Only accounts referenced by steps, cleanup, or the claim
   are logged in; every declared index is validated before the first request. Header precedence is
-  account → role → step, with later layers winning.
-- **`expect.json`** — dotted JSON assertions: `$.items[0].id`, `$.items.0.id`, and matchers
+  account â†’ role â†’ step, with later layers winning.
+- **`expect.json`** â€” dotted JSON assertions: `$.items[0].id`, `$.items.0.id`, and matchers
   `equals`, `not_equals`, `contains`, `one_of`, `exists`. A bare value means deep equality. A key
   containing a literal dot is not addressable; use `body_contains` for those.
-- **`denied_is_coverage`** — on a step, 401/402/403/404 is a successful coverage observation.
+- **`denied_is_coverage`** â€” on a step, 401/402/403/404 is a successful coverage observation.
   The run continues, but that step's `extract` fields are not populated. A later step whose
   placeholder is therefore unresolved is skipped and recorded, never sent with a guessed id.
   429 is *not* coverage; it is retriable/inconclusive.
-- **`state_change` claim** — requires an attacker-role step and a non-empty `json` assertion.
+- **`state_change` claim** â€” requires an attacker-role step and a non-empty `json` assertion.
   Add `owner_verify` (a second-role step) for dual-role evidence; without it the finding is
   confirmed but labelled `single-role` in its metadata and report.
 
 See [`examples/scenarios/multi-role-state-change.json`](examples/scenarios/multi-role-state-change.json)
 for the full shape. Extract names that collide with role variables (`attacker.email`,
-`run_id`, `marker`, …) are rejected at load time. Cleanup is ordered and strict: an unresolved
+`run_id`, `marker`, â€¦) are rejected at load time. Cleanup is ordered and strict: an unresolved
 placeholder is skipped and logged, never guessed; HTTP failures are ignored by default, or
 recorded when a step sets `"ignore_failure": false`.
 
@@ -344,7 +352,7 @@ recorded when a step sets `"ignore_failure": false`.
 A finding that is never submitted, or submitted and rejected, is not a result. `bb outcome`
 records the program's decision (`accepted`, `duplicate`, `informative`, `rejected`, `unknown`),
 the bounty, minutes invested, and dates. `bb metrics` derives acceptance rate, duplicate rate,
-bounty per hour, and breakdowns by class and program. Unknown outcomes stay unknown — they are
+bounty per hour, and breakdowns by class and program. Unknown outcomes stay unknown â€” they are
 not silently counted as failures.
 
 `submitted_at` is stamped automatically only for `accepted`, because acceptance implies a real
@@ -353,35 +361,35 @@ report actually left the machine; otherwise the outcome is recorded and decided,
 counted in the `submitted` metric. A duplicate can be found before submitting, and an informative
 triage note is not a submission.
 
-## 6 · Evaluation
+## 6 Â· Evaluation
 
 **Setup.** Reference machine: Windows, Python 3.12.10, `httpx` 0.28.1, local Ollama
 (`qwen2.5:3b-instruct`, `qwen2.5-coder:7b`, `nomic-embed-text`), OWASP Juice Shop in Docker.
-This is a lab evaluation, not a benchmark against live programs; see §9.
+This is a lab evaluation, not a benchmark against live programs; see Â§9.
 
 | # | Experiment | Measurement | Result |
 |---|---|---|---|
-| **E1** | Unit/integration suite | 136 tests, no network | **136/136 pass**, 3.3–4.9 s |
+| **E1** | Unit/integration suite | 136 tests, no network | **136/136 pass**, 3.3â€“4.9 s |
 | **E2** | Scope predicate, adversarial inputs | 10 attacks + 4 controls | **10/10 denied, 4/4 allowed** |
 | **E3** | Dry-run planning | full hunt, zero packets | **29 requests planned, 0 sent** |
 | **E4** | Lab hunt, two roles | Juice Shop, rate 6 req/s | **53 requests, 64 endpoints, 11.8 s** |
-| **E5** | Findings from E4 | ownership rule (§5.2) | **1 high (proven), 4 medium (confirm)** |
+| **E5** | Findings from E4 | ownership rule (Â§5.2) | **1 high (proven), 4 medium (confirm)** |
 | **E6** | Report gate | cbh 7-question triage | **PASS 7/7** |
-| **E7** | Knowledge base retrieval | 1,422 chunks / 423 documents | top-1 relevant precedent, ≈8 s end-to-end (CPU) |
-| **E8** | Report render, deterministic | no model | ≈1.1 s |
+| **E7** | Knowledge base retrieval | 1,422 chunks / 423 documents | top-1 relevant precedent, â‰ˆ8 s end-to-end (CPU) |
+| **E8** | Report render, deterministic | no model | â‰ˆ1.1 s |
 | **E9** | HAR import, authenticated capture | 52 browser requests | **44 endpoints** (2 id-bearing), 0 out-of-scope stored |
 | **E10** | Live scenario, Juice Shop | two accounts, 4 requests | **confirmed** cross-account read, report queued |
-| **E11** | Stateful write harness | mock lab: create → mutate → verify → cleanup | **confirmed** write-IDOR, cleanup observed |
-| **E12** | Outcome metrics | synthetic accepted outcome (INR 500, 90 min) | acceptance 100%, **₹333.33/hour** |
-| **E13** | HAR→scenario proposer | synthetic HAR: 6 entries, 1 create | **2 drafts** (read + write), 0 requests |
-| **E14** | Schema-2 multi-role harness | 3 accounts, state change | **3 logins**, dual-role confirm, denied→enforced |
+| **E11** | Stateful write harness | mock lab: create â†’ mutate â†’ verify â†’ cleanup | **confirmed** write-IDOR, cleanup observed |
+| **E12** | Outcome metrics | synthetic accepted outcome (INR 500, 90 min) | acceptance 100%, **â‚¹333.33/hour** |
+| **E13** | HARâ†’scenario proposer | synthetic HAR: 6 entries, 1 create | **2 drafts** (read + write), 0 requests |
+| **E14** | Schema-2 multi-role harness | 3 accounts, state change | **3 logins**, dual-role confirm, deniedâ†’enforced |
 
 **Discussion.** The high-confidence finding is the intended output: role A's own object was
 returned to role B with A's email present and B's absent. The four medium findings are the
-price of honesty — each is an endpoint returning identical content to two unrelated roles, which
+price of honesty â€” each is an endpoint returning identical content to two unrelated roles, which
 is *consistent with* IDOR but also with public data; the tool says so rather than inflating the
 count. E7 is the weak point of the local stack: a 16 MB JSON corpus plus CPU embedding costs
-seconds per query, which motivates the ANN/indexing work in §11.
+seconds per query, which motivates the ANN/indexing work in Â§11.
 
 **Threats to validity.** (i) One lab target; no live-program evaluation was possible without
 program credentials. (ii) The similarity threshold $\tau = 0.90$ is a design choice, not a
@@ -390,7 +398,7 @@ it preserve facts and pass validation), not by blind review. (iv) Windows-only m
 CI covers Linux on two Python versions. (v) E12 records a synthetic outcome to exercise the
 metrics path; it is not a bounty, and none of these numbers are earnings.
 
-## 7 · Usage
+## 7 Â· Usage
 
 ### 7.1 Sixty-second demonstration
 
@@ -399,7 +407,7 @@ cd "E:\IDEAS\new idea\bountybot"
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 
-bb integrations   # ollama · KB · cbh · ARTEX · PentAGI · Juice Shop
+bb integrations   # ollama Â· KB Â· cbh Â· ARTEX Â· PentAGI Â· Juice Shop
 bb demo
 ```
 
@@ -420,7 +428,7 @@ requests: 53   endpoints: 64   scope audit: {'ALLOW': 53}
 
 Three inputs gate the first live run: `H1_USERNAME`/`H1_TOKEN`, two accounts you control, and an
 authenticated HAR capture (DevTools) or a Burp proxy. Without them, start with the local demo in
-§7.1 and the capture workflow in §5.6.
+Â§7.1 and the capture workflow in Â§5.6.
 
 ```powershell
 $env:H1_USERNAME = "your-handle"
@@ -471,10 +479,14 @@ bb scope import --program acme --from file --file data/scopes/acme.json
 | `bb hypothesize --program P` | precedents + grounded leads |
 | `bb kb stats\|query\|ingest` | corpus operations |
 | `bb import har FILE --program P` | authenticated traffic → endpoint inventory |
+| `bb import burp FILE --program P` | Burp "Save selected items" XML → endpoint inventory |
 | `bb scenario propose --har F --program P` | draft scenarios from a capture (no execution) |
 | `bb scenario run --file F --program P --accounts A [--allow-write]` | stateful two-role scenario |
-| `bb outcome ID --status …` / `bb outcome --list` | record the program's decision |
+| `bb outcome ID --status â€¦` / `bb outcome --list` | record the program's decision |
 | `bb metrics [--program P]` | acceptance, duplicates, bounty per hour |
+| `bb stop [reason]` / `bb resume` | **kill switch**: stop every request in every process |
+| `bb verify --program P [--accounts A]` | independent verification of candidates (offline audit; online replay with accounts) |
+| `bb feedback [--program P]` | outcome history as class priors (the readback loop) |
 | `bb audit init\|validate\|skill\|ingest` | source-code audit contract (vendored Cloudflare skill) |
 | `bb artex status\|push\|task` | dashboard bridge |
 | `bb submit --finding ID --team H` | print-only submission payload |
@@ -524,7 +536,7 @@ bb metrics
 `--dry-run` on the scenario prints every planned request first. `bb import har` never replays
 the capture; writes happen only in a scenario with `--allow-write`.
 
-## 8 · Integrations
+## 8 Â· Integrations
 
 | Component | Role | Configuration |
 |---|---|---|
@@ -558,7 +570,7 @@ bb audit validate --findings ~/audits/service/findings.json `
 bb audit ingest                      # optional: methodology into the KB
 ```
 
-`bb audit init` refuses to write inside the target — the skill's write-isolation rule — and
+`bb audit init` refuses to write inside the target â€” the skill's write-isolation rule â€” and
 scaffolds `run-metadata.json`, `architecture.md`, and valid empty `findings.json` /
 `coverage-ledger.json`. `bb audit validate` runs the vendored validators: the untouched CLI
 on POSIX, and on Windows (where the CLI's `O_NOFOLLOW` hardening is unavailable) the same
@@ -569,14 +581,14 @@ Cloudflare `confirmed` record, because that verdict requires a source trace (`fi
 independent source verification. Dynamic HTTP evidence stays in bb's report; source evidence
 stays in the skill's run directory.
 
-## 9 · Limitations and responsible use
+## 9 Â· Limitations and responsible use
 
-* **Lab-only evidence.** The numbers in §6 come from Juice Shop. No live HackerOne program was
+* **Lab-only evidence.** The numbers in Â§6 come from Juice Shop. No live HackerOne program was
   tested during development (no program credentials); the H1 scope importer is covered by
   fixture tests, not a live call.
 * **Read-only by default.** `bb hunt` sends GET/HEAD. Scenarios may create, mutate, or delete
   only with `--allow-write`; cleanup is limited to objects the scenario created. Use disposable
-  accounts and resources — a write-IDOR test is still a write.
+  accounts and resources â€” a write-IDOR test is still a write.
 * **Proposals are drafts, not proof.** `bb scenario propose` infers create/read/mutate clusters
   from a capture and assumes the captured session is the owner. Review roles, redacted bodies,
   and the mutation marker before running; the runner proves only what a scenario asserts.
@@ -587,11 +599,11 @@ stays in the skill's run directory.
   `"schema": 2` so a typo cannot silently change semantics.
 * **Threshold, not ground truth.** $\tau = 0.90$ is conservative; medium candidates are
   explicitly labelled as requiring ownership confirmation.
-* **LLM quality is not measured.** It is constrained, validated, and optional — not trusted.
+* **LLM quality is not measured.** It is constrained, validated, and optional â€” not trusted.
 * **You must be authorised.** The scope gate is a safety mechanism, not a permission slip. Test
   only programs whose policy allows it, respect rate limits, and read the program brief.
 
-## 10 · Reproducibility
+## 10 Â· Reproducibility
 
 ```bash
 git clone https://github.com/webspoilt/bounty-hunter-.git
@@ -619,11 +631,11 @@ Reproducing the evaluation: start Juice Shop on `:3000`, then `bb demo`; the see
 account emails and the tool registers them when absent. `--dry-run` reproduces E3 without
 sending traffic.
 
-## 11 · Future work
+## 11 Â· Future work
 
 1. **Guided workflow templates.** Capture common team/invite/role patterns as reusable step
    libraries so a new program needs data, not a new scenario shape.
-2. **Multi-resource workflow synthesis.** Chain two objects (team → member → role) rather than a
+2. **Multi-resource workflow synthesis.** Chain two objects (team â†’ member â†’ role) rather than a
    single create/read/mutate cluster; keep proposals reviewable and never auto-run them.
 3. **Out-of-band checks.** Integrate an interactsh-style collector for blind SSRF/XXE without
    abandoning the scope predicate.
@@ -640,22 +652,22 @@ sending traffic.
 
 ## References
 
-1. HackerOne. *API documentation* — programs, structured scopes, reports. <https://api.hackerone.com/>
-2. OWASP. *WSTG — Testing for Insecure Direct Object References (IDOR)*. <https://owasp.org/www-project-web-security-testing-guide/>
-3. OWASP. *Juice Shop* — deliberately vulnerable web application. <https://owasp.org/www-project-juice-shop/>
-4. S. Sharma. *Claude-BugHunter* — skill bundle and deterministic `cbh` runner. <https://github.com/elementalsouls/Claude-BugHunter>
-5. *ARTEX* — autonomous penetration-testing dashboard. <https://github.com/Autumn-27/ARTEX>
-6. *PentAGI* — autonomous penetration-testing platform. <https://github.com/vxcontrol/pentagi>
+1. HackerOne. *API documentation* â€” programs, structured scopes, reports. <https://api.hackerone.com/>
+2. OWASP. *WSTG â€” Testing for Insecure Direct Object References (IDOR)*. <https://owasp.org/www-project-web-security-testing-guide/>
+3. OWASP. *Juice Shop* â€” deliberately vulnerable web application. <https://owasp.org/www-project-juice-shop/>
+4. S. Sharma. *Claude-BugHunter* â€” skill bundle and deterministic `cbh` runner. <https://github.com/elementalsouls/Claude-BugHunter>
+5. *ARTEX* â€” autonomous penetration-testing dashboard. <https://github.com/Autumn-27/ARTEX>
+6. *PentAGI* â€” autonomous penetration-testing platform. <https://github.com/vxcontrol/pentagi>
 7. Ollama. *Local LLM runtime*. <https://ollama.com/>
-8. *httpx* — Python HTTP client. <https://www.python-httpx.org/>
-9. Cloudflare. *security-audit-skill* — multi-phase source audit with machine-checkable
+8. *httpx* â€” Python HTTP client. <https://www.python-httpx.org/>
+9. Cloudflare. *security-audit-skill* â€” multi-phase source audit with machine-checkable
    findings. <https://github.com/cloudflare/security-audit-skill>
 10. Cloudflare. *Build your own vulnerability harness*.
     <https://blog.cloudflare.com/build-your-own-vulnerability-harness>
 
 ## License and security policy
 
-MIT — see [`LICENSE`](LICENSE). The vendored Cloudflare `security-audit` skill retains its own
+MIT â€” see [`LICENSE`](LICENSE). The vendored Cloudflare `security-audit` skill retains its own
 MIT license in [`skills/security-audit/LICENSE`](skills/security-audit/LICENSE).
 
 Security issues in bountybot itself: see [`SECURITY.md`](SECURITY.md). Third-party targets are

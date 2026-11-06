@@ -15,6 +15,7 @@ from bb.config import (CBH, CBH_HOME, DATA, KB_PATH, accounts_path, ensure_dirs,
 from bb.gate import ApprovalGate
 from bb.h1 import H1Client, H1Error, submit_curl, submit_payload
 from bb.http import BudgetExceeded, ScopedClient
+from bb.killswitch import AbortRequested, active as kill_active
 from bb.llm import Ollama
 from bb.models import sev_rank
 from bb.pipeline import HuntConfig, hunt
@@ -39,6 +40,14 @@ SAMPLE_ACCOUNTS = {
         {"label": "B", "email": "you+bob@example.com", "password_env": "BB_PASS_B"},
     ],
 }
+
+
+def _require_not_stopped() -> None:
+    if kill_active():
+        from bb import killswitch
+        raise SystemExit("kill switch is armed — every request will be refused.\n"
+                         f"reason: {killswitch.reason() or '(none)'}\n"
+                         "clear it with: bb resume")
 
 
 def _scope_or_die(program: str) -> Scope:
@@ -137,6 +146,7 @@ def _client_for(scope: Scope, entry: str, args) -> tuple[ScopedClient, Store, st
 
 
 def cmd_recon(args) -> int:
+    _require_not_stopped()
     scope = _scope_or_die(args.program)
     for url in args.entry:
         d = scope.check(url)
@@ -181,6 +191,7 @@ def _hunt_config(args) -> tuple[HuntConfig, Scope, dict | None]:
 
 
 def cmd_hunt(args) -> int:
+    _require_not_stopped()
     cfg, scope, _ = _hunt_config(args)
     store = Store()
     result = hunt(cfg, store=store)
@@ -466,6 +477,55 @@ def cmd_audit(args) -> int:
     return 1
 
 
+def cmd_stop(args) -> int:
+    from bb import killswitch
+    path = killswitch.activate(args.reason or "")
+    print(f"STOPPED. kill switch armed at {path}")
+    if killswitch.reason():
+        print(f"reason: {killswitch.reason()}")
+    print("every bb process will refuse to send another request. clear with: bb resume")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    from bb import killswitch
+    if killswitch.clear():
+        print("kill switch cleared — requests allowed again")
+    else:
+        print("kill switch was not armed")
+    return 0
+
+
+def cmd_verify(args) -> int:
+    """Independent verification: audit evidence offline, optionally replay online."""
+    _require_not_stopped()
+    from bb import verify as verifier
+    scope = _scope_or_die(args.program)
+    store = Store()
+    client = None
+    accounts = load_accounts(args.accounts) if args.accounts else None
+    if accounts and not args.dry_run:
+        base_url = accounts.get("base_url")
+        if not base_url:
+            raise SystemExit("--accounts JSON needs a base_url for online verification")
+        client = ScopedClient(scope, base_url=base_url, proxy=getattr(args, "proxy", None),
+                              store=store, run_id=store.start_run(scope.program, base_url,
+                              scope.fingerprint, {"cli": "verify"}), tool="verify")
+    try:
+        summary = verifier.verify_candidates(
+            store, scope, args.program, accounts=accounts, client=client,
+            finding_id=args.finding)
+    finally:
+        if client is not None:
+            client.close()
+    print(f"\nverified {summary['verified']} candidate(s): "
+          f"{summary['confirmed']} confirmed, {summary['rejected']} rejected, "
+          f"{summary['kept']} kept as candidates")
+    print("rejected findings keep their evidence and notes in meta['verify']. "
+          "Nothing was queued, reported, or submitted.")
+    return 0
+
+
 def cmd_demo(args) -> int:
     from bb.demo import run
     run(llm=args.llm, budget=args.budget)
@@ -473,16 +533,21 @@ def cmd_demo(args) -> int:
 
 
 def cmd_import(args) -> int:
-    from bb import har
-    scope = _scope_or_die(args.program)
     ensure_dirs()
+    scope = _scope_or_die(args.program)
     store = Store()
+    if args.source == "har":
+        from bb import har
+        kind, loader = "har", har.import_har
+    else:
+        from bb import burp
+        kind, loader = "burp", burp.import_burp
     run_id = store.start_run(scope.program, "", scope.fingerprint,
-                             {"source": "har", "file": str(Path(args.file).resolve())})
+                             {"source": kind, "file": str(Path(args.file).resolve())})
     try:
-        stats = har.import_har(args.file, scope, store, run_id)
+        stats = loader(args.file, scope, store, run_id)
     finally:
-        store.finish_run(run_id, {"source": "har"})
+        store.finish_run(run_id, {"source": kind})
     print(f"\nimported into run {run_id}: {stats['endpoints']} endpoints "
           f"({stats['id_endpoints']} id-bearing), {stats['exchanges']} exchanges")
     id_rows = [e for e in stats.get("endpoint_list", []) if e["id_bearing"]][:20]
@@ -512,6 +577,7 @@ def cmd_scenario(args) -> int:
 
     scope = _scope_or_die(args.program)
     accounts = load_accounts(args.accounts)
+    _require_not_stopped()
     data = scenario.load_scenario(args.file)
     store = Store()
     result = scenario.run_scenario(
@@ -576,6 +642,24 @@ def cmd_metrics(args) -> int:
         print(json.dumps(data, indent=2))
     else:
         print(metrics.format_metrics(data))
+    return 0
+
+
+def cmd_feedback(args) -> int:
+    from bb import feedback
+    priors = feedback.class_priors(Store(), program=args.program)
+    if args.json:
+        print(json.dumps(priors, indent=2))
+        return 0
+    if args.program:
+        print(f"class priors for program {args.program!r} "
+              f"(weight = (accepted+1)/(decided+2); advisory only):\n")
+    else:
+        print("class priors across all programs "
+              "(weight = (accepted+1)/(decided+2); advisory only):\n")
+    print(feedback.format_priors(priors))
+    print("\nhow it acts: high-weight classes are reported/polished first; "
+          "classes scoring < 0.34 with enough history emit a warning, never a silent skip.")
     return 0
 
 
@@ -693,6 +777,105 @@ def cmd_telegram(args) -> int:
     return 0
 
 
+def cmd_auto(args) -> int:
+    from bb.auto import AutoHunter, AutoHunterConfig
+    _require_not_stopped()
+    scope = _scope_or_die(args.program)
+    accounts = load_accounts(accounts_path(args.accounts)) if args.accounts else None
+    entries = args.entry or [f"https://{h}" for h in scope.apex_domains() if not h.startswith("*")]
+    if not entries:
+        raise SystemExit("no entry URLs found; supply via --entry https://target.com")
+
+    cfg = AutoHunterConfig(
+        program=args.program,
+        scope=scope,
+        entry_urls=entries,
+        accounts=accounts,
+        rate=args.rate,
+        max_requests=args.max_requests,
+        timeout=args.timeout,
+        proxy=args.proxy,
+        dry_run=args.dry_run,
+        cbh=args.cbh,
+        llm=args.llm,
+        workers=args.workers,
+        run_waf_probe=not args.no_waf,
+        cve_match=not args.no_cve,
+        ai_analysis=not args.no_ai,
+        queue=not args.no_queue,
+    )
+    hunter = AutoHunter(cfg)
+    res = hunter.run()
+    print("\nAutonomous Run Summary:")
+    print(json.dumps(res, indent=2))
+    return 0
+
+
+def cmd_dashboard(args) -> int:
+    from bb.ui import run_dashboard
+    run_dashboard(host=args.host, port=args.port, open_browser=args.open)
+    return 0
+
+
+def cmd_cve(args) -> int:
+    from bb import cve
+    if args.action == "import":
+        res = cve.import_file(args.file)
+        print(f"imported {res['records']} records ({res['added']} new, {res['total']} total in index)")
+        return 0
+    if args.action == "query":
+        idx = cve.CveIndex()
+        hits = idx.query(args.query, k=args.limit)
+        print(cve.format_hits(hits))
+        return 0
+    if args.action == "stats":
+        idx = cve.CveIndex()
+        print(json.dumps(idx.stats(), indent=2))
+        return 0
+    return 1
+
+
+def cmd_learn(args) -> int:
+    from bb import learn
+    store = Store()
+    if args.action == "report":
+        rep = learn.learning_report(store, program=args.program)
+        if args.json:
+            print(json.dumps(rep, indent=2))
+        else:
+            print(learn.format_report(rep))
+        return 0
+    if args.action == "export":
+        res = learn.export_dataset(store, path=args.out, program=args.program)
+        print(f"exported {res['rows']} SFT records to {res['path']}")
+        print("\n" + learn.training_hint(res['path']))
+        return 0
+    return 1
+
+
+def cmd_waf(args) -> int:
+    from bb import waf
+    _require_not_stopped()
+    scope = _scope_or_die(args.program)
+    client = ScopedClient(scope, proxy=args.proxy, dry_run=args.dry_run, tool="waf")
+    print(f"[*] Probing parameter normalization resilience on {args.url} ...")
+    res = waf.probe_url(client, args.url, param=args.param)
+    print(waf.format_report(res))
+    return 0
+
+
+def cmd_analyze(args) -> int:
+    from bb import analyze
+    store = Store()
+    finding = store.get_finding(args.finding)
+    if not finding:
+        raise SystemExit(f"no finding found matching {args.finding!r}")
+    res = analyze.analyze(finding, use_llm=args.llm)
+    print(analyze.format_analysis(res))
+    return 0
+
+
+
 # ============================================================
 # parser
 # ============================================================
@@ -705,6 +888,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="create data dirs + example config").set_defaults(func=cmd_init)
     sub.add_parser("integrations", help="health-check ollama/cbh/artex/pentagi/lab").set_defaults(func=cmd_integrations)
+
+    st = sub.add_parser("stop", help="KILL SWITCH: stop every request, in every process")
+    st.add_argument("reason", nargs="?", help="why (stored with the marker)")
+    st.set_defaults(func=cmd_stop)
+    rs = sub.add_parser("resume", help="clear the kill switch")
+    rs.set_defaults(func=cmd_resume)
 
     sp = sub.add_parser("scope", help="import / show / check scope")
     ssub = sp.add_subparsers(dest="action", required=True)
@@ -798,6 +987,28 @@ def build_parser() -> argparse.ArgumentParser:
     at = asub.add_parser("task"); at.add_argument("--goal"); at.add_argument("--description")
     at.set_defaults(func=cmd_artex)
 
+    dp = sub.add_parser("duplicate", help="local disclosed-report prior and checklist")
+    dsub = dp.add_subparsers(dest="action", required=True)
+    dpp = dsub.add_parser("pull", help="download the official HackerOne dataset")
+    dpp.add_argument("--dest")
+    dpp.add_argument("--ingest", action="store_true", help="index after downloading")
+    dpp.set_defaults(func=cmd_duplicate)
+    dpi = dsub.add_parser("ingest", help="index local parquet files")
+    dpi.add_argument("--dir")
+    dpi.set_defaults(func=cmd_duplicate)
+    dsub.add_parser("stats", help="show the local index").set_defaults(func=cmd_duplicate)
+    dse = dsub.add_parser("search", help="search disclosed reports")
+    dse.add_argument("--query", required=True)
+    dse.add_argument("--team")
+    dse.add_argument("--asset")
+    dse.add_argument("--weakness")
+    dse.add_argument("--k", type=int, default=10)
+    dse.set_defaults(func=cmd_duplicate)
+    dch = dsub.add_parser("check", help="record a duplicate checklist for a finding")
+    dch.add_argument("--finding", required=True)
+    dch.add_argument("--k", type=int, default=8)
+    dch.set_defaults(func=cmd_duplicate)
+
     s = sub.add_parser("submit", help="print (never send) the HackerOne submission payload")
     s.add_argument("--finding", required=True)
     s.add_argument("--team", required=True)
@@ -829,12 +1040,16 @@ def build_parser() -> argparse.ArgumentParser:
     asub.add_parser("ingest", help="add the methodology to the knowledge base").set_defaults(
         func=cmd_audit)
 
-    imp = sub.add_parser("import", help="import authenticated traffic (HAR export)")
+    imp = sub.add_parser("import", help="import authenticated traffic (HAR or Burp export)")
     isub = imp.add_subparsers(dest="source", required=True)
     ihar = isub.add_parser("har", help="import a browser HAR export")
     ihar.add_argument("file")
     ihar.add_argument("--program", required=True)
     ihar.set_defaults(func=cmd_import)
+    iburp = isub.add_parser("burp", help='import a Burp "Save selected items" XML export')
+    iburp.add_argument("file")
+    iburp.add_argument("--program", required=True)
+    iburp.set_defaults(func=cmd_import)
 
     sc = sub.add_parser("scenario", help="stateful authorization scenarios")
     ssub = sc.add_subparsers(dest="action", required=True)
@@ -876,27 +1091,78 @@ def build_parser() -> argparse.ArgumentParser:
     mt.add_argument("--json", action="store_true")
     mt.set_defaults(func=cmd_metrics)
 
-    dp = sub.add_parser("duplicate", help="local disclosed-report prior and checklist")
-    dsub = dp.add_subparsers(dest="action", required=True)
-    dpp = dsub.add_parser("pull", help="download the official HackerOne dataset")
-    dpp.add_argument("--dest")
-    dpp.add_argument("--ingest", action="store_true", help="index after downloading")
-    dpp.set_defaults(func=cmd_duplicate)
-    dpi = dsub.add_parser("ingest", help="index local parquet files")
-    dpi.add_argument("--dir")
-    dpi.set_defaults(func=cmd_duplicate)
-    dsub.add_parser("stats", help="show the local index").set_defaults(func=cmd_duplicate)
-    dse = dsub.add_parser("search", help="search disclosed reports")
-    dse.add_argument("--query", required=True)
-    dse.add_argument("--team")
-    dse.add_argument("--asset")
-    dse.add_argument("--weakness")
-    dse.add_argument("--k", type=int, default=10)
-    dse.set_defaults(func=cmd_duplicate)
-    dch = dsub.add_parser("check", help="record a duplicate checklist for a finding")
-    dch.add_argument("--finding", required=True)
-    dch.add_argument("--k", type=int, default=8)
-    dch.set_defaults(func=cmd_duplicate)
+    fb = sub.add_parser("feedback", help="outcome history as class priors (the readback loop)")
+    fb.add_argument("--program")
+    fb.add_argument("--json", action="store_true")
+    fb.set_defaults(func=cmd_feedback)
+
+    vv = sub.add_parser("verify", help="independently verify candidate findings before reporting")
+    vv.add_argument("--program", required=True)
+    vv.add_argument("--accounts", help="accounts JSON — enables online replay verification")
+    vv.add_argument("--finding", help="verify one finding instead of all candidates")
+    vv.add_argument("--proxy")
+    vv.add_argument("--dry-run", action="store_true", help="offline audit only, no login/replay")
+    vv.set_defaults(func=cmd_verify)
+
+    ui = sub.add_parser("dashboard", help="launch local web dashboard and triage UI")
+    ui.add_argument("--host", default="127.0.0.1", help="dashboard bind host")
+    ui.add_argument("--port", type=int, default=8888, help="dashboard port")
+    ui.add_argument("--open", action="store_true", help="open web browser on start")
+    ui.set_defaults(func=cmd_dashboard)
+
+    au = sub.add_parser("auto", help="fully autonomous bug hunter loop (recon -> checks -> verify -> triage)")
+    au.add_argument("--program", required=True)
+    au.add_argument("--entry", action="append", help="entry URL (can be specified multiple times)")
+    au.add_argument("--accounts", help="accounts JSON file for differential auth testing")
+    au.add_argument("--rate", type=float, default=2.0, help="request rate limit (req/s)")
+    au.add_argument("--max-requests", type=int, default=200, help="maximum request budget")
+    au.add_argument("--timeout", type=float, default=15.0)
+    au.add_argument("--proxy")
+    au.add_argument("--dry-run", action="store_true")
+    au.add_argument("--cbh", action="store_true")
+    au.add_argument("--llm", action="store_true")
+    au.add_argument("--workers", type=int, default=4)
+    au.add_argument("--no-waf", action="store_true")
+    au.add_argument("--no-cve", action="store_true")
+    au.add_argument("--no-ai", action="store_true")
+    au.add_argument("--no-queue", action="store_true")
+    au.set_defaults(func=cmd_auto)
+
+    cv = sub.add_parser("cve", help="local CVE knowledge base (query, import, stats)")
+    csub = cv.add_subparsers(dest="action", required=True)
+    ci = csub.add_parser("import", help="import NVD or CISA-KEV JSON into local index")
+    ci.add_argument("--file", required=True)
+    ci.set_defaults(func=cmd_cve)
+    cq = csub.add_parser("query", help="query CVE index by product or tech stack")
+    cq.add_argument("query")
+    cq.add_argument("--limit", type=int, default=10)
+    cq.set_defaults(func=cmd_cve)
+    cs = csub.add_parser("stats", help="show CVE index statistics")
+    cs.set_defaults(func=cmd_cve)
+
+    ln = sub.add_parser("learn", help="continuous learning and QLoRA SFT dataset export")
+    lsub = ln.add_subparsers(dest="action", required=True)
+    lr = lsub.add_parser("report", help="show class priors and empirical learning report")
+    lr.add_argument("--program")
+    lr.add_argument("--json", action="store_true")
+    lr.set_defaults(func=cmd_learn)
+    le = lsub.add_parser("export", help="export human verdicts to QLoRA SFT JSONL format")
+    le.add_argument("--out", help="destination JSONL file")
+    le.add_argument("--program")
+    le.set_defaults(func=cmd_learn)
+
+    wf = sub.add_parser("waf", help="probe parameter normalization resilience (defensive canary)")
+    wf.add_argument("--program", required=True)
+    wf.add_argument("--url", required=True)
+    wf.add_argument("--param", help="specific parameter name to test")
+    wf.add_argument("--proxy")
+    wf.add_argument("--dry-run", action="store_true")
+    wf.set_defaults(func=cmd_waf)
+
+    az = sub.add_parser("analyze", help="AI response analysis and next test suggestion")
+    az.add_argument("finding", help="finding ID or prefix")
+    az.add_argument("--llm", action="store_true", help="use local Ollama model for deep analysis")
+    az.set_defaults(func=cmd_analyze)
     return p
 
 

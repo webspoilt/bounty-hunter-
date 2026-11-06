@@ -12,6 +12,7 @@ from pathlib import Path
 
 from bb.config import DB_PATH, now_iso
 from bb.models import Evidence, Exchange, Finding, sev_rank
+from bb import normalize
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -29,6 +30,23 @@ CREATE TABLE IF NOT EXISTS endpoints (
     method TEXT NOT NULL, host TEXT NOT NULL, path TEXT, source TEXT,
     params TEXT, auth_hint TEXT, created_at TEXT NOT NULL,
     UNIQUE(run_id, method, url)
+);
+CREATE TABLE IF NOT EXISTS parameters (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, host TEXT, template TEXT,
+    name TEXT NOT NULL, kind TEXT, examples TEXT, source TEXT, created_at TEXT NOT NULL,
+    UNIQUE(run_id, host, template, name)
+);
+CREATE TABLE IF NOT EXISTS routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, host TEXT, method TEXT,
+    template TEXT NOT NULL, sample_url TEXT, source TEXT, hits INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+    UNIQUE(run_id, host, method, template)
+);
+CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY, run_id TEXT, kind TEXT NOT NULL, target TEXT NOT NULL,
+    fingerprint TEXT NOT NULL UNIQUE, state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0, result TEXT, created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS exchanges (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, tool TEXT, method TEXT, url TEXT,
@@ -142,18 +160,169 @@ class Store:
     def add_endpoint(self, run_id: str, url: str, method: str = "GET", host: str = "",
                      path: str = "", source: str = "", params: list | None = None,
                      auth_hint: str = "") -> None:
+        """Record an endpoint plus its normalized route and every query parameter.
+
+        Callers can stay dumb: passing a URL is enough for the store to derive the
+        host, the path template (`/api/users/{id}`), the route row, and one parameter
+        row per query name. `params` may still be supplied (HAR/Burp importers do).
+        """
+        from urllib.parse import urlsplit
+        method = method.upper()
+        host = host or (urlsplit(url).hostname or "")
+        path = path or (urlsplit(url).path or "/")
+        found = normalize.extract_params(url)
+        names = params if params is not None else [p["name"] for p in found]
         self.conn.execute(
             "INSERT OR IGNORE INTO endpoints (run_id, url, method, host, path, source, params, "
             "auth_hint, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (run_id, url, method.upper(), host, path, source, json.dumps(params or []),
+            (run_id, url, method, host, path, source, json.dumps(names),
              auth_hint, now_iso()))
+        self.record_route(run_id, url, method, source=source)
+        for p in found:
+            self.add_parameter(run_id, url, p["name"], p["kind"], p["examples"], source)
         self.conn.commit()
 
     def endpoints(self, run_id: str | None = None) -> list[dict]:
         q = ("SELECT * FROM endpoints" if run_id is None else
              "SELECT * FROM endpoints WHERE run_id=?") + " ORDER BY id"
         rows = self.conn.execute(q, (() if run_id is None else (run_id,))).fetchall()
-        return [dict(r) | {"params": json.loads(r["params"] or "[]")} for r in rows]
+        out = []
+        for r in rows:
+            rec = dict(r)
+            rec["params"] = json.loads(r["params"] or "[]")
+            rec["template"] = normalize.normalize_path(r["path"] or "/")
+            out.append(rec)
+        return out
+
+    # ---------- routes + parameters (stateful inventory) ----------
+
+    def record_route(self, run_id: str | None, url: str, method: str = "GET",
+                     source: str = "") -> str:
+        """Upsert a normalized route; returns the path template."""
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        template = normalize.normalize_path(parts.path or "/")
+        now = now_iso()
+        self.conn.execute(
+            "INSERT INTO routes (run_id, host, method, template, sample_url, source, hits, "
+            "first_seen, last_seen) VALUES (?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(run_id, host, method, template) DO UPDATE SET "
+            "hits=routes.hits+1, last_seen=excluded.last_seen, sample_url=excluded.sample_url",
+            (run_id, host, method.upper(), template, url, source, 1, now, now))
+        self.conn.commit()
+        return template
+
+    def add_parameter(self, run_id: str | None, url: str, name: str, kind: str = "value",
+                      examples: list | None = None, source: str = "") -> None:
+        from urllib.parse import urlsplit
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+        template = normalize.normalize_path(parts.path or "/")
+        self.conn.execute(
+            "INSERT INTO parameters (run_id, host, template, name, kind, examples, source, "
+            "created_at) VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(run_id, host, template, name) DO UPDATE SET "
+            "kind=excluded.kind, examples=excluded.examples",
+            (run_id, host, template, name[:120], kind,
+             json.dumps((examples or [])[:3]), source, now_iso()))
+        self.conn.commit()
+
+    def parameters(self, run_id: str | None = None, kind: str | None = None) -> list[dict]:
+        clauses, args = [], []
+        if run_id is not None:
+            clauses.append("run_id=?"); args.append(run_id)
+        if kind:
+            clauses.append("kind=?"); args.append(kind)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM parameters{where} ORDER BY host, template, name", args).fetchall()
+        return [dict(r) | {"examples": json.loads(r["examples"] or "[]")} for r in rows]
+
+    def routes(self, run_id: str | None = None) -> list[dict]:
+        q = ("SELECT * FROM routes" if run_id is None else
+             "SELECT * FROM routes WHERE run_id=?") + " ORDER BY hits DESC, host, template"
+        rows = self.conn.execute(q, (() if run_id is None else (run_id,))).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---------- agent task ledger (deduplication across workers and runs) ----------
+
+    def task_claim(self, kind: str, target: str, run_id: str | None = None,
+                   fingerprint: str | None = None, max_attempts: int = 3,
+                   max_age_hours: float | None = None) -> bool:
+        """Claim a unit of work exactly once across every worker and every run.
+
+        Returns True only when this caller inserted the task, resurrected a failed
+        one, or re-claimed a ``done`` task older than ``max_age_hours``. A duplicate
+        fingerprint that is pending/running/done returns False, which is the whole
+        point: 50 workers cannot do the same job twice.
+        """
+        import hashlib
+        from datetime import datetime, timedelta, timezone
+
+        fp = fingerprint or hashlib.sha256(
+            f"{kind}|{target}".encode("utf-8", "replace")).hexdigest()[:20]
+        now = now_iso()
+        cur = self.conn.execute(
+            "INSERT OR IGNORE INTO tasks (id, run_id, kind, target, fingerprint, state, "
+            "attempts, created_at, updated_at) VALUES (?,?,?,?,?, 'pending', 0, ?, ?)",
+            (fp, run_id, kind, target[:2000], fp, now, now))
+        if cur.rowcount == 0:
+            row = self.conn.execute(
+                "SELECT state, attempts, updated_at FROM tasks WHERE fingerprint=?",
+                (fp,)).fetchone()
+            if not row:
+                self.conn.commit()
+                return False
+            stale = False
+            if max_age_hours is not None and row["state"] == "done":
+                try:
+                    seen = datetime.fromisoformat(row["updated_at"])
+                    if seen.tzinfo is None:
+                        seen = seen.replace(tzinfo=timezone.utc)
+                    stale = datetime.now(timezone.utc) - seen > timedelta(hours=max_age_hours)
+                except (TypeError, ValueError):
+                    stale = True
+            if row["state"] not in ("failed", "skipped") and not stale:
+                self.conn.commit()
+                return False
+            if row["state"] in ("failed", "skipped") and row["attempts"] >= max_attempts:
+                self.conn.commit()
+                return False
+            if stale:
+                self.conn.execute(
+                    "UPDATE tasks SET attempts=0, result=NULL WHERE fingerprint=?", (fp,))
+        self.conn.execute(
+            "UPDATE tasks SET state='running', attempts=attempts+1, run_id=COALESCE(run_id, ?), "
+            "updated_at=? WHERE fingerprint=?", (run_id, now, fp))
+        self.conn.commit()
+        return True
+
+    def task_finish(self, fingerprint: str, state: str = "done", result: dict | None = None) -> None:
+        self.conn.execute(
+            "UPDATE tasks SET state=?, result=?, updated_at=? WHERE fingerprint=?",
+            (state, json.dumps(result or {}), now_iso(), fingerprint))
+        self.conn.commit()
+
+    def tasks(self, state: str | None = None, run_id: str | None = None) -> list[dict]:
+        clauses, args = [], []
+        if state:
+            clauses.append("state=?"); args.append(state)
+        if run_id:
+            clauses.append("run_id=?"); args.append(run_id)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.conn.execute(
+            f"SELECT * FROM tasks{where} ORDER BY created_at", args).fetchall()
+        return [dict(r) | {"result": json.loads(r["result"] or "{}")} for r in rows]
+
+    def task_counts(self, run_id: str | None = None) -> dict:
+        q = "SELECT state, COUNT(*) n FROM tasks"
+        args: tuple = ()
+        if run_id:
+            q += " WHERE run_id=?"
+            args = (run_id,)
+        q += " GROUP BY state"
+        return {r["state"]: r["n"] for r in self.conn.execute(q, args).fetchall()}
 
     def assets(self, run_id: str | None = None) -> list[dict]:
         q = ("SELECT * FROM assets" if run_id is None else
@@ -376,8 +545,11 @@ class Store:
             "by_status": by_status,
             "pending_approvals": one("SELECT COUNT(*) FROM queue WHERE state='pending'"),
             "endpoints": one("SELECT COUNT(*) FROM endpoints"),
+            "routes": one("SELECT COUNT(*) FROM routes"),
+            "parameters": one("SELECT COUNT(*) FROM parameters"),
             "assets": one("SELECT COUNT(*) FROM assets"),
             "exchanges": one("SELECT COUNT(*) FROM exchanges"),
+            "tasks": one("SELECT COUNT(*) FROM tasks"),
         }
 
     # deterministic finding expansion for tests/inspection

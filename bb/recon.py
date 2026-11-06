@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, parse_qs
 
+from bb import normalize
 from bb.config import CBH, CBH_HOME, RECON
 from bb.http import ScopedClient
 from bb.scope import Scope
@@ -32,12 +33,171 @@ OPENAPI_PATHS = (
 LINK_RE = re.compile(r"""(?:href|action|src)\s*=\s*["']([^"'<>]+)["']""", re.I)
 SCRIPT_RE = re.compile(r"""<script[^>]+src\s*=\s*["']([^"']+)["']""", re.I)
 LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.I)
-# strings in JS that look like API paths
+# strings in JS that look like API paths (fallback when no AST parser is available)
 JS_PATH_RE = re.compile(r"""["'`](/(?:api|rest|v[0-9]+|graphql|internal|admin|users?|accounts?|"""
                         r"""orders?|invoices?|baskets?|items?|files?|documents?|messages?|"""
                         r"""profiles?|transactions?|payments?|reports?|settings?|auth)[^"'`\s]{0,120})["'`]""")
 FETCH_RE = re.compile(r"""fetch\(\s*["'`]([^"'`]+)["'`]""")
 NUMERIC_ID = re.compile(r"/\d{1,10}(/|$|\?)")
+
+# AST-based JS endpoint extraction. Regex scraping of bundled JS misfires on URLs in
+# comments, strings that are not routes, and string concatenation; parsing the file and
+# extracting HTTP call arguments plus literal API-path constants is far more precise.
+# The regex fallback keeps working when esprima is unavailable or the bundle is unwritable.
+_API_PATH_BODY = (r"/(?:api|rest|v[0-9]+|graphql|internal|admin|users?|accounts?|"
+                  r"orders?|invoices?|baskets?|items?|files?|documents?|messages?|"
+                  r"profiles?|transactions?|payments?|reports?|settings?|auth)"
+                  r"[^\"'`\s]{0,120}")
+JS_PATH_RE = re.compile(r"""["'`]""" + "(" + _API_PATH_BODY + ")" + r"""["'`]""")
+_API_PATH_RE = re.compile(_API_PATH_BODY)
+HTTP_CALLERS = {"fetch", "axios", "request", "http", "https", "superagent", "ky", "got",
+                "ajax", "xhr", "api", "client", "httpclient"}
+HTTP_METHODS = {"get", "post", "put", "patch", "delete", "head", "options", "request"}
+
+
+def _is_js_node(value) -> bool:
+    return hasattr(value, "type") and not isinstance(value, (str, bytes, bool, int, float))
+
+
+def _walk_js(node):
+    yield node
+    if not hasattr(node, "__dict__"):
+        return
+    for value in vars(node).values():
+        if _is_js_node(value):
+            yield from _walk_js(value)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                if _is_js_node(item):
+                    yield from _walk_js(item)
+
+
+def _expr_name(node) -> str:
+    """Best-effort placeholder name for ``${user.id}`` / ``${id}``."""
+    kind = getattr(node, "type", "")
+    if kind == "Identifier":
+        return str(getattr(node, "name", "") or "id").strip() or "id"
+    if kind == "MemberExpression":
+        prop = getattr(node, "property", None)
+        if prop is not None:
+            return _expr_name(prop)
+    return "id"
+
+
+def _template_text(node) -> str | None:
+    """Rebuild a template literal as ``/api/users/${id}`` instead of losing the tail."""
+    quasis = getattr(node, "quasis", None) or []
+    expressions = getattr(node, "expressions", None) or []
+    if not quasis:
+        return None
+    parts: list[str] = []
+    for index, quasi in enumerate(quasis):
+        value = getattr(quasi, "value", None)
+        parts.append(getattr(value, "cooked", None) or getattr(value, "raw", "") or "")
+        if index < len(expressions):
+            parts.append("${" + _expr_name(expressions[index]) + "}")
+    return "".join(parts)
+
+
+def _placeholder_name(expr: str) -> str:
+    """Normalize a JS/OpenAPI placeholder expression into a parameter name."""
+    name = (expr or "").strip().split(".")[-1].split("[")[0]
+    name = re.sub(r"[^A-Za-z0-9_\-]", "", name)
+    return name or "id"
+
+
+def _string_literal(node) -> str | None:
+    kind = getattr(node, "type", "")
+    if kind == "Literal" and isinstance(getattr(node, "value", None), str):
+        return node.value
+    if kind == "TemplateLiteral":
+        return _template_text(node)
+    return None
+
+
+def _is_http_factory(callee) -> bool:
+    """True for axios/ky/got/superagent or `axios.create(...)`-style constructs."""
+    kind = getattr(callee, "type", "")
+    if kind == "Identifier":
+        return (callee.name or "").lower() in ("axios", "ky", "got", "superagent", "axiosky")
+    if kind == "MemberExpression":
+        obj = getattr(callee, "object", None)
+        prop = getattr(callee, "property", None)
+        return (getattr(obj, "name", "") or "").lower() in ("axios", "ky", "got", "superagent") \
+            and (getattr(prop, "name", "") or "").lower() in ("create", "extend")
+    return False
+
+
+def _extract_js_paths_ast(body: str) -> list[str]:
+    """Endpoints from the first argument of fetch/axios-style calls in a parsed bundle."""
+    import esprima
+    tree = esprima.parseScript(body, {"tolerant": True})
+
+    # band-local aliases: `service = axios.create(...)` makes `service.get(...)` an HTTP call
+    aliases: set[str] = set()
+    for node in _walk_js(tree):
+        if getattr(node, "type", "") != "VariableDeclarator":
+            continue
+        init = getattr(node, "init", None)
+        name = getattr(getattr(node, "id", None), "name", None)
+        if init is not None and name and getattr(init, "type", "") == "CallExpression" \
+                and _is_http_factory(getattr(init, "callee", None)):
+            aliases.add(name)
+
+    callers = HTTP_CALLERS | {a.lower() for a in aliases}
+    out: list[str] = []
+    for node in _walk_js(tree):
+        kind = getattr(node, "type", "")
+
+        # (1) first argument of an HTTP-style call: any string literal or plain template
+        if kind == "CallExpression":
+            callee = getattr(node, "callee", None)
+            if callee is None:
+                continue
+            ck = getattr(callee, "type", "")
+            if ck == "Identifier":
+                if (callee.name or "").lower() not in callers:
+                    continue
+            elif ck == "MemberExpression":
+                obj = getattr(callee, "object", None)
+                prop = getattr(callee, "property", None)
+                method = (getattr(prop, "name", "") or "").lower() \
+                    if getattr(prop, "type", "") == "Identifier" else ""
+                obj_name = (getattr(obj, "name", "") or "").lower() \
+                    if getattr(obj, "type", "") == "Identifier" else ""
+                if method not in HTTP_METHODS or obj_name not in callers:
+                    continue
+            else:
+                continue
+            args = getattr(node, "arguments", None) or []
+            s = _string_literal(args[0]) if args else None
+
+        # (2) any string constant anywhere in the file that IS an API-shaped path.
+        # The old regex scraped these too, but strings inside comments are not AST
+        # nodes, so those false positives disappear here.
+        elif kind == "Literal" and isinstance(getattr(node, "value", None), str):
+            s = node.value
+        else:
+            s = None
+
+        if s and s.startswith("/") and _API_PATH_RE.fullmatch(s):
+            out.append(s)
+    return out
+
+
+def _extract_js_paths(body: str) -> tuple[list[str], str]:
+    """Returns (paths, source). AST first; regex fallback on any failure."""
+    try:
+        ast_paths = _extract_js_paths_ast(body)
+        if ast_paths:
+            return ast_paths, "js-ast"
+        return [], "js-ast"          # parsed cleanly, nothing HTTP-shaped: trust the AST
+    except ImportError:
+        pass
+    except Exception:
+        pass                          # hostile or minified-beyond-repair bundle → regex
+    fallback = list(set(JS_PATH_RE.findall(body)) | set(FETCH_RE.findall(body)))
+    return fallback, "js"
 
 
 def _origin(url: str) -> str:
@@ -140,14 +300,19 @@ class Recon:
         body = self._fetch(js_url)
         if not body or len(body) > 2_000_000:
             return
-        for raw in set(JS_PATH_RE.findall(body)) | set(FETCH_RE.findall(body)):
+        for raw, source in self._extract_from_text(body):
             raw = raw.replace("${", "{").replace("}", "}")
             raw = re.sub(r"\{[^}]*\}", "{id}", raw)
             if "{" in raw:            # template: keep as inventory pattern, not a probe target
                 continue
             url = _clean(raw, js_url)
             if url:
-                self._add(url, source="js")
+                self._add(url, source=source)
+
+    @staticmethod
+    def _extract_from_text(body: str) -> list[tuple[str, str]]:
+        paths, source = _extract_js_paths(body)
+        return [(p, source) for p in paths]
 
     def _robots(self, origin: str) -> None:
         text = self._fetch(f"{origin}/robots.txt")

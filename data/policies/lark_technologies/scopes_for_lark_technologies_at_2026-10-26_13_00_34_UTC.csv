@@ -1,0 +1,38 @@
+identifier,asset_type,instruction,eligible_for_bounty,eligible_for_submission,availability_requirement,confidentiality_requirement,integrity_requirement,max_severity,system_tags,created_at,updated_at
+larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-05-30 07:47:02 UTC,2023-01-23 10:49:35 UTC
+lark-frontier.byteoversea.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 12:57:34 UTC,2023-01-23 10:49:35 UTC
+file.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:02:32 UTC,2023-01-23 10:49:35 UTC
+open.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:03:33 UTC,2023-01-23 10:49:35 UTC
+api.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:04:17 UTC,2023-01-23 10:49:35 UTC
+app.larksuite.com,URL,**Tier 2** Asset,true,true,,,,critical,,2019-06-02 13:04:36 UTC,2023-01-23 10:49:35 UTC
+caldav.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:05:04 UTC,2023-01-23 10:49:35 UTC
+status.larksuite.com,URL,**Tier 2** Asset,true,true,,,,critical,,2019-06-02 13:05:49 UTC,2023-01-23 10:49:35 UTC
+passport.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:06:18 UTC,2023-01-23 10:49:35 UTC
+internal-api.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:06:40 UTC,2023-01-23 10:49:35 UTC
+internal-api-lark-api.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:06:54 UTC,2023-01-23 10:49:35 UTC
+internal-api-drive-stream.larksuite.com,URL,**Tier 1** Asset,true,true,,,,critical,,2019-06-02 13:07:08 UTC,2023-01-23 10:49:35 UTC
+Windows OS Executable: Download here https://www.larksuite.com/download,DOWNLOADABLE_EXECUTABLES,"**Tier 1** Asset
+
+This is the Lark Suite application for Windows. Only the latest version of the application will be in scope. 
+
+Please download the latest version of the application here: https://www.larksuite.com/download",true,true,,,,critical,,2019-06-03 07:41:59 UTC,2023-01-23 10:49:39 UTC
+Mac OS Executable: Download here https://www.larksuite.com/download,DOWNLOADABLE_EXECUTABLES,"**Tier 1** Asset
+
+This is the Lark Suite application for Mac OS. Only the latest version of the application will be in scope.
+
+Please download the latest version of the application here: https://www.larksuite.com/download",true,true,,,,critical,,2019-06-26 04:22:45 UTC,2023-01-23 10:49:40 UTC
+1452166623,APPLE_STORE_APP_ID,"**Tier 1** Asset
+
+Only the latest version of the application will be in scope. 
+
+[Download from the Apple App Store here](https://apps.apple.com/app/lark-collaboration-tool/id1452166623)",true,true,,,,critical,,2019-08-07 10:36:31 UTC,2023-01-23 10:49:40 UTC
+com.larksuite.suite,OTHER_APK,"**Tier 1** Asset
+
+Only the latest version of the application will be in scope. 
+
+[Download from the Google Play Store here](https://play.google.com/store/apps/details?id=com.larksuite.suite)",true,true,,,,critical,,2019-09-05 04:41:43 UTC,2023-01-23 10:49:39 UTC
+hackers_chosendomain.larksuite.com,URL,"**Tier 1** Asset
+
+<hacker’s_chosendomain>.larksuite.com
+If you find a vulnerability against your own test account domain, please feel free to use this asset for submission.
+",true,true,,,,critical,,2020-11-30 10:12:07 UTC,2023-01-23 10:49:38 UTC

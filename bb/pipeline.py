@@ -47,6 +47,12 @@ def hunt(cfg: HuntConfig, store: Store | None = None, log=print) -> dict:
     if not cfg.entry_urls:
         raise SystemExit("no entry URLs — pass --entry https://app.example.com/")
 
+    # the kill switch is checked again before every single request, inside ScopedClient
+    from bb import killswitch
+    if killswitch.active():
+        raise SystemExit(f"kill switch is armed: {killswitch.reason() or '(no reason given)'}"
+                         " — clear with `bb resume`")
+
     # every entry must be in scope before we even open a client
     for url in cfg.entry_urls:
         decision = scope.check(url)
@@ -165,6 +171,17 @@ def _report_and_queue(findings: list[Finding], cfg: HuntConfig, scope: Scope, st
     if not candidates:
         log("  no reportable candidates (informational findings stay in the store)")
         return
+
+    # feedback readback: recorded outcomes become class priors that reorder work,
+    # annotate reports, and warn when a class keeps duplicating on this program.
+    if cfg.entry_urls:
+        from bb import feedback
+        candidates = feedback.rank_priority(candidates, store, program=cfg.program)
+        advisories = feedback.annotate(candidates, store, program=cfg.program)
+        for adv in advisories:
+            log(f"  [feedback] {adv['bug_class']}: weight {adv['weight']} — "
+                f"{adv['note']}. History says this class keeps failing here; "
+                "review before submitting.")
 
     kb = None
     try:

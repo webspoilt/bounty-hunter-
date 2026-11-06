@@ -15,6 +15,7 @@ import time
 
 import httpx
 
+from bb import killswitch
 from bb.config import BODY_CAP, DEFAULT_RATE, DEFAULT_TIMEOUT, USER_AGENT
 from bb.models import Exchange
 from bb.redact import redact_body, redact_headers
@@ -31,7 +32,8 @@ class ScopedClient:
                  max_requests: int | None = None, deadline: float | None = None,
                  dry_run: bool = False, store=None, run_id: str | None = None,
                  tool: str = "http", verify: bool = True, user_agent: str | None = None,
-                 transport: httpx.BaseTransport | None = None):
+                 transport: httpx.BaseTransport | None = None,
+                 resolve_dns: bool | None = None):
         self.scope = scope
         self.base_url = base_url
         self.rate = max(rate, 0.1)
@@ -45,6 +47,10 @@ class ScopedClient:
         self.planned: list[tuple[str, str]] = []
         self.last_exchange: Exchange | None = None
         self._last = 0.0
+        # None = auto: validate DNS unless a test transport is injected or this is a
+        # dry-run. Explicit True/False overrides the auto decision.
+        self._resolve_dns = (transport is None and not dry_run) if resolve_dns is None \
+            else bool(resolve_dns)
         self._client = httpx.Client(
             timeout=timeout, follow_redirects=False, verify=verify,
             proxy=proxy, transport=transport,
@@ -88,6 +94,32 @@ class ScopedClient:
             raise ValueError(f"relative URL {url!r} without a base_url")
         return str(httpx.URL(self.base_url).join(url))
 
+    def _attempt_gate(self, absolute: str, host: str, attempt: int) -> None:
+        """Safety gates applied to *every* outbound attempt, not just the first.
+
+        Retries re-check the kill switch and DNS resolution (both can change
+        between attempts), and each attempt counts against the request budget
+        and passes through the rate limiter.
+        """
+        if attempt > 0:
+            if killswitch.active():
+                reason = killswitch.reason() or "kill switch is armed"
+                if self.store:
+                    self.store.audit_scope(self.run_id, absolute, "STOP", reason, host)
+                raise killswitch.AbortRequested(
+                    f"{absolute} aborted on retry {attempt + 1}: {reason} "
+                    "(clear with `bb resume`)")
+            if self._resolve_dns and not self.dry_run:
+                dns = self.scope.verify_resolution(absolute)
+                if not dns.allowed:
+                    if self.store:
+                        self.store.audit_scope(self.run_id, absolute, "DENY",
+                                               f"dns guard (retry): {dns.reason}", dns.host)
+                    raise ScopeViolation(
+                        f"{absolute} refused by DNS guard on retry: {dns.reason}")
+        self._reserve()
+        self.sent += 1
+
     def request(self, method: str, url: str, *, headers: dict | None = None,
                 params: dict | None = None, json=None, data=None, content=None,
                 follow_redirects: bool = False) -> httpx.Response:
@@ -98,10 +130,32 @@ class ScopedClient:
                 self.store.audit_scope(self.run_id, absolute, "DENY", decision.reason,
                                        decision.host)
             raise ScopeViolation(f"{method.upper()} {absolute} refused: {decision.reason}")
+
+        # DNS rebinding guard: a hostname that matches scope by name may still resolve
+        # somewhere the program never approved. Validate the resolution before sending.
+        extra_reason = ""
+        if self._resolve_dns and not self.dry_run:
+            dns = self.scope.verify_resolution(absolute)
+            if not dns.allowed:
+                if self.store:
+                    self.store.audit_scope(self.run_id, absolute, "DENY",
+                                           f"dns guard: {dns.reason}", dns.host)
+                raise ScopeViolation(
+                    f"{method.upper()} {absolute} refused by DNS guard: {dns.reason}")
+            extra_reason = f"; dns: {dns.reason}"
+
+        # Kill switch: one marker file stops every client in every process.
+        if killswitch.active():
+            reason = killswitch.reason() or "kill switch is armed"
+            if self.store:
+                self.store.audit_scope(self.run_id, absolute, "STOP", reason, decision.host)
+            raise killswitch.AbortRequested(
+                f"{method.upper()} {absolute} aborted: {reason} (clear with `bb resume`)")
+
         if self.store:
             self.store.audit_scope(self.run_id, absolute,
                                    "PLAN" if self.dry_run else "ALLOW",
-                                   decision.reason, decision.host)
+                                   decision.reason + extra_reason, decision.host)
 
         req = self._client.build_request(
             method.upper(), absolute, headers=headers, params=params,
@@ -110,12 +164,12 @@ class ScopedClient:
             self.planned.append((req.method, str(req.url)))
             return httpx.Response(0, request=req)
 
-        self._reserve()
-        self.sent += 1
-
         started = time.monotonic()
         resp = None
         for attempt in range(3):
+            # Every outbound attempt re-crosses budget, deadline, rate-limit,
+            # kill-switch and DNS gates before it is actually sent.
+            self._attempt_gate(absolute, decision.host, attempt)
             try:
                 resp = self._client.send(req, follow_redirects=follow_redirects)
             except httpx.HTTPError as exc:
