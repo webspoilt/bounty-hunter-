@@ -1,0 +1,939 @@
+
+
+
+
+
+
+
+Move from linear scripts to a stateful engine, Store hosts, endpoints, parameters and HTTP traffic, Extract routes and API details from JavaScript, Differential testing with two user accounts, Integrate Burp Suite, Use AI to analyze responses and suggest next tests, Build a CVE knowledge base,Use QLoRA or a continuously learning mode, A feedback and evaluation system, Run 50+ agents but no more cost, noise and duplicated work, Automatically generate WAF bypasses and keep trying them within program rules., A wildcard scope does not automatically mean fewer researchers or more vulnerabilities.
+
+
+
+B2B SaaS applications can have interesting authorization flaws, but no category guarantees better bounty results.
+
+
+
+There is no reliable universal statistic that public scanners produce a particular percentage of duplicates.
+
+
+
+A model does not become continuously smarter simply because it receives more HTTP responses. Your software must store outcomes, evaluate them and use them to improve future decisions.
+
+
+1. Scope & Safety Engine
+Program rules, allowlists, request budgets, approvals
+
+2. Discovery Engine
+Hosts, crawling, JavaScript, APIs, schemas
+
+3. Application Knowledge Graph
+Endpoints, parameters, roles, objects, relationships
+
+4. Security Intelligence
+CVE, CWE, CAPEC, advisories, disclosed reports
+
+
+
+5. AI Research Orchestrator
+
+Hypothesis generation · Task planning · Specialist agents · Model gateway
+
+
+6. Investigation Engine
+ tests, response comparison, verification
+
+7. Evidence & Learning
+Evidence store, outcomes, deduplication, evaluation
+
+
+
+8. Researcher Workspace
+
+Burp Suite · Findings · Verification queue · HackerOne report drafts
+
+
+Agent	Responsibility
+Surface Mapper	Understand hosts, pages, routes and exposed APIs.
+API Analyst	Analyze methods, parameters, schemas and object identifiers.
+Authentication Analyst	Understand login, sessions, roles and permission boundaries.
+Hypothesis Agent	Propose specific, testable vulnerability hypotheses.
+Investigation Agent	Request controlled tests and examine the results.
+Verification Agent	Independently attempt to disprove suspected vulnerabilities.
+Deduplication Agent	Compare candidates with previous findings and known reports.
+Report Agent	Produce clear reproduction steps, impact and remediation.
+
+
+These agents should share one application knowledge base and one evidence store.
+
+For example:
+1. The Surface Mapper discovers /api/v1/invoices/{id}.
+2. The API Analyst identifies the invoice ID and its associated user or tenant.
+3. The Authentication Analyst identifies two authorized test accounts with different permissions.
+4. The Hypothesis Agent proposes: "Can one tenant access another tenant's invoice?"
+5. The Investigation Engine performs an approved, controlled comparison.
+6. The Verification Agent checks whether the result is genuinely an authorization failure rather than a normal response variation.
+7. The Report Agent prepares the evidence.
+That is an actual investigation workflow—not just an LLM producing a list of possible vulnerabilities.
+4. The vulnerability research priorities
+I would organize your first testing capabilities around these areas.
+Priority	Vulnerability area	What your engine should understand
+1	Broken Access Control / IDOR / BOLA	User, tenant and object ownership
+2	Authentication Failures	Session handling, identity and account boundaries
+3	Broken Function Level Authorization	Role and permission differences
+4	Business Logic Flaws	Workflow state, ordering and business rules
+5	Injection	Input sources, sinks and safe validation
+6	SSRF	Server-side URL handling and authorized validation
+7	Security Misconfiguration	Exposed services, unsafe configurations
+8	Cryptographic Failures	Sensitive data handling and insecure transport
+9	Security Logging and Monitoring Failures	Missing or ineffective security events
+10	Vulnerable and Outdated Components	Dependency and version intelligence
+
+This is a practical selection of research areas informed by OWASP-style categories, not a claim that these are ranked by bounty payout.
+
+My recommendation: make authorization and business logic your first serious investigation engines. They require application context, which is precisely where your platform can differentiate itself from generic scanners.
+5. Adaptive learning: how to make it actually work
+This is one of the most important parts of the whole project.
+
+Do not begin by fine-tuning a model. Build a persistent learning system first.
+
+Every investigation should store:
+- Target and program scope.
+- Endpoint and HTTP method.
+- Authentication context and role.
+- Vulnerability hypothesis.
+- Test performed.
+- Sanitized request and response evidence.
+- Result: confirmed, rejected, inconclusive or duplicate.
+- Reason for the result.
+- Model and prompt version.
+- Researcher review and final report outcome, if available.
+Then use those records to improve future research.
+Adaptive research loop
+1. Observe
+   
+   Discover an endpoint, API parameter or application behavior.
+2. Understand
+   
+   Retrieve relevant application context and security knowledge.
+3. Hypothesize
+   
+   Generate a specific vulnerability hypothesis with supporting evidence.
+4. Investigate
+   
+   Run a bounded, authorized test.
+5. Evaluate
+   
+   Compare expected and actual behavior; reject weak hypotheses.
+6. Learn
+   
+   Store the outcome and update future hypothesis prioritization.
+
+For example, if your system repeatedly finds that a certain endpoint pattern is harmless, it can reduce the priority of similar hypotheses. If a particular API pattern has led to verified authorization issues, it can prioritize examining similar patterns in future applications.
+
+That is adaptive learning without pretending the model has updated its own weights.
+
+Later, once you have a meaningful dataset of reviewed examples, you can consider fine-tuning.
+6. Model strategy: no local model required
+Since you intend to run this through Antigravity or OpenCode, don't couple the system to Qwen, Inkling or any one model.
+
+Build a Model Gateway with a common interface:
+ModelGateway
+    ├── OpenAIProvider
+    ├── AnthropicProvider
+    ├── GeminiProvider
+    ├── OpenRouterProvider
+    └── LocalProvider (optional)
+
+
+Each agent calls the same interface. You can select a model for each task.
+
+For example:
+Task	Model requirement
+Endpoint classification	Fast, inexpensive model
+JavaScript analysis	Strong code understanding
+Vulnerability hypothesis generation	Strong reasoning
+Response interpretation	Strong reasoning
+Independent verification	A different model or independent rule-based checks
+Report drafting	Good technical writing
+
+You can start entirely with hosted APIs. The platform should not depend on having a local GPU.
+
+Also, keep API keys outside your repository, redact secrets and sensitive user data before sending evidence to external model providers, and respect each program's confidentiality requirements.
+7. Burp Suite integration
+Burp should become a first-class part of the platform, not an afterthought.
+
+I would implement:
+- Proxy support: Route Bounty Hunter's HTTP traffic through Burp.
+- HAR import: Ingest captured authenticated traffic.
+- Request/response import: Store useful traffic as structured evidence.
+- Endpoint export: Export discovered APIs and routes for Burp analysis.
+- Evidence linking: Connect a Bounty Hunter finding to the corresponding Burp request.
+- Manual verification: Let the researcher reproduce and inspect a candidate before reporting it.
+The automated engine should complement Burp, not try to replace the analyst.
+
+
+Phase 0 — Audit and harden the existing project
+First
+
+Foundation · Highest priority
+- Verify redirect scope enforcement.
+- Ensure every retry counts against request budgets.
+- Validate DNS resolution and destination restrictions.
+- Ensure every network request goes through the central scoped client.
+- Add tests for unsafe redirects, retries and scope violations.
+- Preserve existing functionality and tests.
+
+
+Phase 1 — Application knowledge base
+
+Structured understanding
+- Improve SQLite entities and relationships.
+- Normalize API routes.
+- Extract JavaScript endpoints and parameters.
+- Import HAR files and API schemas.
+- Build endpoint and object relationships.
+
+
+Phase 2 — Investigation engines
+
+Actual vulnerability testing
+- Two-account authorization testing.
+- Role and permission comparisons.
+- Object ownership checks.
+- Controlled workflow and business logic testing.
+- Evidence-based response comparison.
+
+
+Phase 3 — AI research orchestrator
+
+Agentic intelligence
+- Model gateway.
+- Agent task manager.
+- Hypothesis generation.
+- Evidence retrieval.
+- Controlled test requests.
+- Independent verification.
+
+
+Phase 4 — Security intelligence and adaptive learning
+
+Research improvement
+- CVE, CWE and CAPEC ingestion.
+- Security advisory and disclosure indexing.
+- Finding deduplication.
+- Outcome-based hypothesis ranking.
+- Evaluation datasets and model comparisons.
+
+
+Phase 5 — Burp and researcher workspace
+
+Usability and reporting
+- Burp proxy and traffic integration.
+- Investigation dashboard.
+- Evidence review queue.
+- Finding confidence and severity.
+- HackerOne report drafts.
+
+
+Phase 6 — Scale and optimization
+
+Only after quality is proven
+- Parallel agent execution.
+- Task scheduling and recovery.
+- Cost and token tracking.
+- Model routing.
+- More specialized agents.
+- Optional fine-tuning.
+
+one complete end-to-end investigation: discover an API endpoint, understand its authorization context, formulate an IDOR/BOLA hypothesis, test it safely with two authorized accounts, independently verify the result, and produce a report with evidence.
+
+If that works reliably in a deliberately vulnerable lab, you have the foundation for a genuinely useful platform.
+
+we can use the idea as the design target for Bounty Hunter.
+1. What a 50-agent system should actually look like
+The key is that 50 agents should not mean 50 independent bots randomly scanning websites.
+
+It should mean a coordinated team of specialist workers, all sharing application knowledge, security intelligence, findings and investigation history.
+
+I'd design it like this:
+Central Research Orchestrator
+Schedules work, assigns agents, manages state, budgets and priorities
+
+Discovery Team
+Subdomain, asset, crawling, JavaScript, API and schema workers
+
+Application Analysis Team
+Authentication, roles, API behavior, objects and workflows
+
+Vulnerability Research Team
+Authorization, injection, SSRF, business logic and other focused researchers
+
+Verification Team
+Reproduction, false-positive rejection, deduplication and impact analysis
+
+
+
+Shared Research Memory
+Application graph · CVE index · Disclosed reports · Prior tests · Evidence · Outcomes
+
+Controlled Investigation Engine
+Scope validation · Request budgets · Test accounts · Burp integration · Approval gates
+
+Verified Findings → Human Review → HackerOne Report
+
+
+The orchestrator assigns tasks dynamically. One endpoint might need five agents investigating different questions; another might need only one. Workers should not duplicate work unnecessarily.
+2. The 50-agent allocation I'd aim for
+This is an example allocation for a mature system, not a requirement to launch all 50 immediately.
+Team	Workers	Work
+Asset discovery	6	Hosts, DNS, services and asset changes
+Application mapping	7	Crawling, JavaScript, APIs and schemas
+Authentication and authorization	8	Sessions, roles, tenants and access boundaries
+Vulnerability research	12	Specialized vulnerability hypotheses
+Business logic research	5	Application workflows and state transitions
+Verification and deduplication	6	Reproduction, false-positive rejection and duplicates
+Reporting and intelligence	3	Security research retrieval and report preparation
+Orchestration and quality control	3	Scheduling, evaluation and resource management
+Total	50	
+
+A useful distinction: these are logical worker slots. They don't have to be 50 separate model instances. Workers can share model providers, run asynchronously, and use ordinary code for deterministic tasks.
+
+I would start with 8–12 logical agents and a smaller number of concurrent investigations. Increase concurrency only when the evidence shows that it improves results without creating excessive noise or target load.
+3. The CVE search index is a major part of that idea
+I would build a dedicated Security Intelligence Engine rather than simply giving agents access to a folder of CVE files.
+
+It should ingest:
+- CVE records and vendor advisories.
+- CWE weakness descriptions.
+- CAPEC attack patterns.
+- Security bulletins and patch notes.
+- Publicly disclosed vulnerability reports.
+- Your own verified and rejected investigation history.
+The search process should understand context.
+
+For example, suppose Bounty Hunter discovers a Laravel application using a particular package version. The intelligence engine should retrieve relevant vulnerabilities and advisories, check whether their affected versions match, and give the researcher useful context.
+
+It should not simply see the word "Laravel" in a CVE description and declare the application vulnerable.
+
+The index should support semantic search, exact keyword search, version matching, dates and source provenance.
+4. The model: QLoRA GLM 5.2 versus hosted models
+The post's QLoRA approach is interesting, but I would not copy that part first.
+
+There are three separate capabilities here:
+Capability	What it does
+RAG and research memory	Retrieves relevant findings and security knowledge
+Feedback and evaluation	Learns which investigation strategies produce useful results
+Fine-tuning / QLoRA	Adapts model behavior using a curated training dataset
+
+You can build the first two without training your own model.
+
+For your first implementation, use hosted model APIs through a provider-independent gateway. That lets Antigravity or OpenCode drive the development workflow without requiring you to run a local model.
+
+Once Bounty Hunter has enough reviewed investigation records, you can evaluate whether fine-tuning improves performance on a fixed benchmark. Fine-tuning without good training examples could actually make the system worse.
+5. The most important part: continuous research
+This is the part I would specifically take from the post.
+
+I would implement a scheduler that keeps the system working through a queue of authorized research tasks.
+
+For an in-scope program, the process could be:
+1. Check for permitted scope or asset changes.
+2. Discover newly available application surfaces.
+3. Map new routes, APIs and application behavior.
+4. Retrieve relevant security intelligence.
+5. Generate ranked, evidence-based vulnerability hypotheses.
+6. Assign investigation tasks to specialist workers.
+7. Execute controlled tests within program rules and request budgets.
+8. Send promising candidates to independent verification.
+9. Store results, including rejected hypotheses.
+10. Prioritize the remaining research tasks.
+This gives you continuous research without indiscriminately attacking production systems. Each program's scope, rate limits, exclusions and testing rules must be enforced for every worker. Destructive tests, access to other users' private information and state-changing actions need appropriate safeguards and approval.
+6. How I would combine this with your existing Bounty Hunter
+I would not throw away your existing project and start again.
+Existing Bounty Hunter capability discussed earlier	Future role
+Recon and asset discovery	Discovery workers
+Scope engine	Central authorization boundary
+HTTP client	Controlled tool execution
+Scenario testing	Investigation workers
+SQLite storage	Shared research memory
+Evidence handling	Verification and reporting
+AI hypothesis generation	Research orchestrator
+Burp integration	Researcher inspection and manual validation
+
+The new pieces are the multi-agent scheduler, shared application knowledge graph, CVE intelligence index, model gateway, outcome-based learning and independent verification.
+7. The build sequence I would now follow
+1. Build the research harness
+   
+   Task queue, central orchestrator, shared state, agent interfaces and model gateway.
+2. Build the security intelligence index
+   
+   CVE, CWE, CAPEC, advisories, disclosed reports and your own reviewed findings.
+3. Build application understanding
+   
+   API discovery, JavaScript analysis, authentication contexts, object relationships and workflows.
+4. Build specialist investigation workers
+   
+   Begin with authorization and business logic, then add other vulnerability categories.
+5. Build independent verification
+   
+   A separate verification process must reproduce the suspected behavior and try to disprove it.
+6. Add continuous scheduling and learning
+   
+   Prioritize new work based on program changes, previous outcomes, evidence quality and resource budgets.
+7. Scale towards 50+ workers
+   
+   Use measured improvements in verified findings, false-positive rate, cost and target load to decide when to scale.
+My conclusion
+I would use that kid's system as the ambition, not as a proven technical specification to copy.
+
+The difference between the system you have and the system you want isn't just the number of agents. It's the ability to maintain a persistent understanding of an application and conduct many coordinated, evidence-driven investigations over time.
+
+My proposed target for Bounty Hunter is:
+
+An always-running, multi-agent security research harness with a CVE intelligence index, shared application memory, adaptive investigation, Burp integration and independent vulnerability verification.
+
+
+The goal is not to produce thousands of URLs or run 50 agents just to say 50 agents are running. The goal is to produce fewer, stronger, reproducible findings.
+
+
+
+
+The core modules to implement
+Module A — Program and scope manager
+This is the first thing that happens when someone gives Bounty Hunter a target.
+
+Example:
+bounty-hunter program add
+bounty-hunter program validate --program example
+bounty-hunter research start --program example
+
+
+Store a program profile containing:
+Field	Example
+Program name	Example SaaS
+In-scope assets	Explicit approved domains and IPs
+Out-of-scope assets	Excluded domains, paths and systems
+Allowed test categories	As specified by program
+Rate limits	Program-defined request limits
+Authentication	Researcher-owned test accounts
+Restrictions	Prohibited test types and actions
+Validity	Scope review and expiry information
+
+The scope engine should enforce:
+- Exact host and asset matching, including subdomain rules.
+- Redirect validation at every hop.
+- DNS resolution and destination validation.
+- Request and concurrency budgets.
+- Per-program and per-host rate limits.
+- Explicit restrictions on destructive and state-changing operations.
+- A kill switch for an individual program or the entire system.
+Do not let an agent interpret a wildcard as permission to test unrelated infrastructure. The program's actual policy is authoritative.
+Module B — Discovery engine
+Keep the useful recon capabilities you already built. The difference is that every discovery result should become a structured record rather than a line in a text file.
+
+It should discover:
+Area	Expected output
+Hosts	In-scope subdomains and discovered services
+Web applications	Live applications and technologies
+Routes	Pages and application paths
+JavaScript	Bundles, route references and API references
+APIs	REST, GraphQL and other observed interfaces
+Parameters	Query, path, body and header parameters
+Documentation	OpenAPI and other published API schemas
+Traffic	Imported HAR and Burp observations
+
+Tools such as subfinder, httpx, katana and nuclei can remain as adapters where useful. Don't let each tool create its own independent data format.
+
+Every result should feed the same data model.
+Module C — Application knowledge graph
+This is one of the most important new capabilities.
+
+A URL list tells you where an application might be. It does not tell you how the application works.
+
+The knowledge graph should connect:
+- Applications to routes.
+- Routes to API endpoints.
+- Endpoints to parameters.
+- Endpoints to authentication requirements.
+- Users to roles and tenants.
+- Resources to their owners.
+- Workflows to their state transitions.
+- Findings to the requests and observations that support them.
+Example:
+Application
+  ├── Account Management
+  │     ├── GET /api/accounts/{account_id}
+  │     ├── PATCH /api/accounts/{account_id}
+  │     └── DELETE /api/accounts/{account_id}
+  │
+  ├── Authentication
+  │     ├── Login
+  │     ├── Session Refresh
+  │     └── Logout
+  │
+  └── Billing
+        ├── GET /api/invoices/{invoice_id}
+        └── POST /api/invoices/{invoice_id}/export
+
+
+The graph should capture what is known, what is inferred and what remains unknown. An endpoint extracted from JavaScript is not proof that the endpoint is accessible or vulnerable.
+Module D — Investigation engine
+This is where the project stops being a recon tool.
+
+Build separate investigation packs. Each pack needs its own rules, preconditions, safe test methods, expected evidence and stop conditions.
+Investigation pack	Main purpose
+Object authorization	Check whether users can access resources they do not own
+Function authorization	Check whether permissions are enforced for restricted functions
+Property authorization	Check whether users can read or modify protected fields
+Authentication	Examine session and identity boundaries
+Business logic	Investigate workflow and state-transition weaknesses
+Injection	Identify unsafe handling of untrusted input
+SSRF	Assess server-side URL handling through controlled validation
+Misconfiguration	Detect exposed or unsafe application configuration
+Cryptography	Assess transport and sensitive-data protection
+Software supply chain	Identify vulnerable components and verify affected-version applicability
+
+These map to modern application security categories. The current OWASP Top 10 is the 2025 edition, including Broken Access Control, Security Misconfiguration, Software Supply Chain Failures, Cryptographic Failures, Injection, Insecure Design, Authentication Failures, Software or Data Integrity Failures, Logging and Alerting Failures, and Mishandling of Exceptional Conditions. 
+top10.owasp.org+1
+
+
+Do not treat those ten categories as equally automatable or equally likely to earn a bounty. Prioritize based on the application's actual architecture and observable behavior.
+
+4. First build: a genuine authorization investigation
+I would make the first complete automated investigation BOLA/IDOR.
+
+Why? It gives you a practical test of whether Bounty Hunter can reason about application context rather than merely identify suspicious URLs.
+
+Use two researcher-controlled test accounts and resources deliberately created by those accounts.
+Example controlled application
+Tenant A
+Test account A
+User A
+Owns invoice A
+
+Tenant B
+Test account B
+User B
+Owns invoice B
+
+
+
+The investigation
+1. Capture a baseline request for an account's own test resource.
+2. Replay the controlled request with the other test account's credentials.
+3. Compare the outcomes while using only those accounts and resources.
+4. Check whether the application enforces the intended ownership boundary.
+5. Have a separate verifier repeat the finding and rule out harmless response differences.
+Expected deliverable
+A reproducible authorization finding supported by sanitized request/response evidence.
+
+The system should not access unrelated customers' data to prove a vulnerability. Use test-owned data, minimal evidence and program-approved methods.
+
+When this complete workflow works reliably in a lab, you have a meaningful first version of an actual vulnerability investigation engine.
+
+5. The agent system: build towards 50 workers
+The 50-agent post is a useful ambition, but I would implement logical specialists first. They don't have to be 50 different models or 50 independent processes.
+Agent group	Target worker slots	Responsibilities
+Asset discovery	5	Hosts, services, changes, asset validation
+Application mapping	7	Routes, JavaScript, schemas and APIs
+Identity and authorization	8	Roles, sessions, tenants and ownership
+Vulnerability research	12	Focused hypothesis generation and investigation
+Business logic	5	Workflow and state-transition analysis
+Verification and deduplication	6	Reproduction, impact and duplicate checking
+Security intelligence and reports	3	Research retrieval and report preparation
+Orchestration and quality control	4	Scheduling, budgets and evaluations
+Total	50	
+
+How agents should communicate
+Don't let agents pass huge unstructured conversations to one another.
+
+Use a shared task and evidence protocol. Every agent should return structured information with fields such as:
+{
+  "task_id": "task-123",
+  "agent_role": "authorization_analyst",
+  "target_asset": "approved-asset",
+  "hypothesis": "A test user may access a resource owned by another test tenant",
+  "supporting_observations": [],
+  "required_preconditions": [],
+  "proposed_test": {},
+  "risk_level": "low",
+  "confidence": 0.0,
+  "status": "needs_investigation"
+}
+
+
+The central orchestrator decides which tasks are ready, which need more evidence and which require approval.
+The agent execution lifecycle
+QUEUED
+  ↓
+SCOPE_VALIDATION
+  ↓
+CONTEXT_GATHERING
+  ↓
+HYPOTHESIS_GENERATION
+  ↓
+TEST_PLAN_REVIEW
+  ↓
+APPROVAL (when required)
+  ↓
+CONTROLLED_EXECUTION
+  ↓
+EVIDENCE_COLLECTION
+  ↓
+INDEPENDENT_VERIFICATION
+  ↓
+CONFIRMED / REJECTED / INCONCLUSIVE
+  ↓
+REPORT_DRAFT / RESEARCH_BACKLOG
+
+
+Every transition should be persisted so a process crash, API failure or stopped agent does not lose the investigation history.
+
+6. Build the autonomous research loop
+Your desired user experience is:
+bounty-hunter research start --program example
+
+
+The system should then manage the research queue by itself.
+
+The continuous workflow:
+1. Read the approved program profile.
+2. Check scope validity and current restrictions.
+3. Identify new or previously unanalyzed assets.
+4. Discover routes, APIs and application behavior.
+5. Update the application knowledge graph.
+6. Retrieve relevant security intelligence.
+7. Generate ranked hypotheses.
+8. Assign work to the appropriate specialist agents.
+9. Request only permitted tests from the execution engine.
+10. Evaluate the resulting evidence.
+11. Independently verify promising candidates.
+12. Save confirmed and rejected results.
+13. Reprioritize the remaining work.
+It should schedule research intelligently rather than repeatedly scanning the entire target.
+Four autonomy levels
+Mode	What the system can do
+Observe	Passive asset and documentation analysis.
+Map	Bounded, low-noise discovery and application mapping.
+Investigate	Specific controlled tests within the program's permissions.
+Report	Prepare finding drafts and evidence for human review.
+
+State-changing tests should require appropriate approval and test-account safeguards. No automated destructive testing, data exfiltration, credential attacks, or unrestricted WAF-bypass loops. Do not automatically submit reports.
+
+The Burp integration should also remain controlled: PortSwigger supports external integration through the REST API and custom extensions; secure the API key and keep the service bound to a trusted local interface. 
+PortSwigger+1
+
+
+7. Security intelligence and adaptive learning
+This is where you incorporate the CVE index and the learning concept from the post.
+Security intelligence store
+Ingest and index:
+- CVE records.
+- CWE weakness descriptions.
+- CAPEC attack patterns.
+- Vendor security advisories.
+- Security patch notes.
+- Publicly disclosed vulnerability reports.
+- Your own reviewed investigation history.
+Each document should retain its source, date, version applicability and provenance.
+
+For a discovered technology or component, retrieve relevant intelligence and check the actual affected version and configuration. A CVE match is a research lead, not proof of a vulnerability.
+Feedback store
+For every hypothesis, save:
+Field	Purpose
+Hypothesis	What weakness was suspected
+Application context	Why it was suspected
+Test plan	What was actually tested
+Result	Confirmed, rejected or inconclusive
+Evidence	What supports the outcome
+Reason	Why the hypothesis passed or failed
+Duplicate status	Whether a known issue overlaps
+Reviewer outcome	Whether the finding was accepted, rejected or otherwise resolved
+Model and prompt version	Makes experiments reproducible
+
+Use those results to adjust future prioritization.
+
+For example, if a certain endpoint pattern repeatedly produces false positives, the engine should learn to ask for stronger evidence before spending more requests on similar candidates.
+
+Do not start with QLoRA. Start with reliable retrieval, persistent outcomes and benchmark evaluation. Fine-tune only when you have enough reviewed examples to show that a trained model performs better than the current hosted model.
+
+8. Model gateway: hosted models first
+You said you will use Antigravity or OpenCode and may not have a local model. That's fine.
+
+Create one provider-independent model interface:
+ModelGateway
+  ├── OpenAIProvider
+  ├── AnthropicProvider
+  ├── GeminiProvider
+  ├── OpenRouterProvider
+  └── LocalProvider (optional later)
+
+
+Each agent specifies the capabilities it requires, and the gateway chooses the configured provider.
+Workload	Model characteristics
+Endpoint classification	Fast and inexpensive
+JavaScript and code analysis	Strong code understanding
+Hypothesis generation	Strong reasoning
+Response analysis	Strong reasoning and structured output
+Independent verification	Independent model or deterministic checks
+Report drafting	Accurate technical writing
+
+Add:
+- API-key management through environment variables or a secrets manager.
+- Per-program and per-task cost limits.
+- Provider timeouts and fallback behavior.
+- Prompt and model version tracking.
+- Structured output validation.
+- Secret and personal-data redaction before external model calls.
+Your system should remain usable even if a provider is unavailable.
+
+9. Burp Suite integration
+Burp should be part of the everyday research workflow.
+Feature	Implementation
+Proxy integration	Route approved requests through Burp
+HAR ingestion	Import authenticated researcher traffic
+Traffic parsing	Convert requests and responses into structured observations
+API export	Export discovered endpoints and schemas
+Evidence linking	Associate a finding with relevant HTTP traffic
+Manual review	Open and reproduce a candidate in Burp
+Extension	Optional custom Bounty Hunter panel and actions
+
+I would build the first integration using proxy support and HAR import. Later, build a Java extension using PortSwigger's Montoya API if you need a richer Burp interface. 
+PortSwigger+2
+
+
+10. Data architecture
+Start with SQLite if the application is running as a single-user CLI. Use PostgreSQL when multiple workers or researchers need concurrent access.
+
+The core entities should be:
+Entity	Stores
+programs	Program identity and rules
+scope_assets	Authorized and excluded assets
+hosts	Discovered host information
+applications	Application-level grouping
+endpoints	Normalized API routes
+parameters	Parameter names, locations and types
+auth_contexts	Researcher-controlled identities and roles
+objects	Test-owned resources and ownership metadata
+workflows	Application state transitions
+observations	Captured application behavior
+hypotheses	Proposed vulnerability explanations
+test_plans	Preconditions, steps and expected evidence
+test_executions	Actual controlled test runs
+evidence	Sanitized requests, responses and artifacts
+findings	Verified vulnerability candidates
+reports	Human-reviewable report drafts
+agent_runs	Agent activity and task status
+model_calls	Provider, model, token and cost metadata
+feedback	Researcher and program outcomes
+intelligence_documents	CVEs, advisories and report references
+
+For sensitive material, apply encryption at rest, access control and redaction. Keep raw evidence separately protected from the sanitized context sent to a model.
+
+11. How Bounty Hunter should prioritize research
+Don't tell the AI to "find any bug." Make it rank concrete hypotheses.
+
+Each hypothesis should have:
+- A target endpoint or workflow.
+- A suspected security weakness.
+- The application behavior supporting the suspicion.
+- What evidence is missing.
+- A safe way to test it.
+- Expected signals for a genuine issue.
+- A stop condition.
+- A likely impact, if verified.
+Maintain two different scores:
+
+Research priority — which hypothesis is worth investigating next.
+
+Finding severity — how serious the issue is, once verified.
+
+A suggested prioritization model:
+Factor	Weight
+Supporting evidence	25%
+Potential impact	25%
+Testability	20%
+Novelty / duplicate risk	15%
+Scope confidence	10%
+Cost of investigation	5%
+
+These weights are an initial heuristic, not a proven bounty-success formula. Calibrate them using the platform's own measured results.
+
+Never let a high model confidence score turn an unverified hypothesis into a confirmed finding.
+
+12. The implementation roadmap — build in this exact order
+This is the most important part. Resist the temptation to start with 50 agents.
+Phase 0 — Audit and harden
+Must do first
+
+Review the existing code and tests. Verify redirect scope checks, retry accounting, DNS/destination restrictions, rate limiting and that all network traffic passes through the same controlled client.
+
+Deliverable: a safe, tested execution foundation.
+
+
+Phase 1 — Persistent research data
+
+Build the normalized database, endpoint model, evidence store, task records and investigation history.
+
+Deliverable: no important observation is lost between runs.
+
+
+Phase 2 — Application understanding
+
+Improve JavaScript analysis, API parsing, route normalization, HAR ingestion, authentication-context tracking and application graph construction.
+
+Deliverable: Bounty Hunter understands more than a list of URLs.
+
+
+Phase 3 — First real investigation engine
+
+Implement BOLA/IDOR and role-based authorization testing using two controlled accounts and their own test resources. Add business logic analysis next.
+
+Deliverable: one complete, reproducible vulnerability investigation in a lab.
+
+
+Phase 4 — AI research loop
+
+Add a hosted-model gateway, structured hypothesis generation, evidence retrieval, test planning and controlled task execution.
+
+Deliverable: AI can investigate a specific hypothesis rather than merely summarize scan output.
+
+
+Phase 5 — Independent verification
+
+Add independent reproduction, false-positive rejection, duplicate checking, impact analysis and report preparation.
+
+Deliverable: high-quality candidate findings with reproducible evidence.
+
+
+Phase 6 — Security intelligence and feedback
+
+Build the CVE/CWE/CAPEC index, report precedent search, outcome tracking and hypothesis-priority adjustment.
+
+Deliverable: research quality improves from reviewed outcomes.
+
+
+Phase 7 — Burp integration and dashboard
+
+Add proxy and HAR support, evidence linking, manual investigation queue, progress view and reports.
+
+Deliverable: an integrated researcher workspace.
+
+
+Phase 8 — Multi-agent scaling
+
+Expand from a few specialist workers to 10, 20 and eventually 50 logical workers. Introduce distributed queues, concurrency control, recovery, cost tracking and load management as needed.
+
+Deliverable: parallel research that measurably improves verified outcomes without overwhelming targets.
+
+
+Suggested repository organization
+Keep the existing code where it already has a sound responsibility. Gradually organize the project towards a structure like this:
+bounty-hunter/
+├── bb/
+│   ├── cli/
+│   ├── controller/
+│   ├── scope/
+│   ├── execution/
+│   ├── discovery/
+│   ├── application/
+│   │   ├── routes/
+│   │   ├── javascript/
+│   │   ├── api/
+│   │   └── graph/
+│   ├── investigations/
+│   │   ├── authorization/
+│   │   ├── authentication/
+│   │   ├── business_logic/
+│   │   ├── injection/
+│   │   └── misconfiguration/
+│   ├── agents/
+│   │   ├── orchestrator/
+│   │   ├── discovery/
+│   │   ├── analyst/
+│   │   ├── investigator/
+│   │   └── verifier/
+│   ├── intelligence/
+│   ├── models/
+│   ├── burp/
+│   ├── evidence/
+│   ├── learning/
+│   ├── reporting/
+│   └── store/
+├── migrations/
+├── tests/
+│   ├── unit/
+│   ├── integration/
+│   ├── safety/
+│   └── evaluation/
+├── configs/
+├── docs/
+└── pyproject.toml
+
+
+This is a target structure, not an instruction to move every existing file immediately.
+
+13. What proves that the platform actually finds bugs?
+You need a test environment with known vulnerabilities and known secure behavior. Otherwise, you won't know whether a new agent is improving the platform or simply increasing the number of suspicious results.
+
+Use intentionally vulnerable labs such as OWASP Juice Shop and OWASP crAPI, plus a small custom application with multiple test users, tenants, roles and workflows.
+
+Create a benchmark with:
+Metric	What it tells you
+True-positive rate	How often suspected issues are genuinely present
+False-positive rate	How often the system reports harmless behavior
+Coverage	How many known test cases it can identify
+Verification success	How many candidates survive independent reproduction
+Duplicate rate	How often it repeats known findings
+Time to verified result	How efficiently it investigates
+Cost per verified result	Whether its agent/model use is economical
+Target request volume	Whether the system stays within its operational limits
+
+A successful first benchmark is not "found 100 vulnerabilities." It is "identified the seeded authorization flaw, rejected the clean cases, reproduced the issue, and generated a clear report."
+
+Only after that should you test on actual HackerOne programs, and only within their explicitly authorized rules.
+
+14. Program selection: give the platform a target-quality score
+Build a program comparison tool rather than automatically selecting programs because they have wildcard scopes.
+
+Evaluate:
+Criterion	Why it matters
+Scope clarity	Reduces accidental out-of-scope testing
+Application complexity	Complex authorization and workflows create more research opportunities
+API availability	Gives the engine structured interfaces to investigate
+Authentication options	Enables legitimate multi-account testing
+Program activity	Helps avoid programs with unclear or dormant processes
+Scope changes	Recently added assets may deserve fresh analysis
+Bounty policy	Makes potential rewards and exclusions transparent
+Researcher competition	Helps estimate saturation, where reliable public data exists
+Testing restrictions	Determines what the automation can safely perform
+
+Use this score to help you choose where to spend research time. It should not claim to predict which program will pay you.
+
+15. What I would not build yet
+These features may look impressive, but they are not the foundation:
+- 50 independent LLM instances.
+- A custom-trained GLM or Qwen model.
+- An elaborate vector database before structured data exists.
+- Autonomous unrestricted fuzzing.
+- A giant dashboard before the investigation engine works.
+- Automatic HackerOne submissions.
+- Agent-generated payload collections without an evidence-based test plan.
+Build the capability to investigate first. Scale it second.
+
+16. The first milestone you should give Antigravity or OpenCode
+This is the first concrete engineering assignment I would use. It deliberately asks the coding agent to inspect and preserve the existing implementation before proposing changes.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,6 +1,8 @@
 # BountyBot (v2.6.0) Complete Architecture, Status & Roadmap
 
 > **Snapshot Document**: Preserves all context, conversation history, design decisions, and next steps from the Antigravity/OpenCode sessions across the ChatGPT, Gemini, and DeepSeek blueprints.
+>
+> **Original transcripts**: The raw conversation transcripts these decisions came from are preserved in `docs/sessions/` — see `docs/sessions/README.md` for an index of which blueprint contributed what.
 
 ---
 
