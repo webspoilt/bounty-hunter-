@@ -536,6 +536,32 @@ bb metrics
 `--dry-run` on the scenario prints every planned request first. `bb import har` never replays
 the capture; writes happen only in a scenario with `--allow-write`.
 
+### 7.6 Duplicate prevention
+
+Bountybot works hard not to produce or re-claim work that is a duplicate — of itself, of your
+own earlier findings, or of what the store already holds:
+
+- **Run-level dedup** — re-running a `hunt`/`auto` loop never re-claims a `done` task
+  (`store.heartbeat` refuses duplicates older than `max_age_hours` only for stale claims).
+- **Finding-level dedup** — before a finding is reported, `store.find_duplicate(bug_class, url)`
+  checks whether an earlier finding matched the same class against the same URL, so the same
+  bug is never queued twice.
+- **Ingest dedup** — `bb kb ingest` content-hashes every chunk, so re-ingesting a corpus does
+  not duplicate it; HAR/Burp imports collapse the same file with different cache-buster
+  query strings (normalization-level duplicate suppression).
+- **Duplicate-rate feedback** — record the program's decision with `bb outcome ID --status
+  duplicate`, and `bb metrics` / `bb feedback` will surface a rising duplicate rate as a
+  prompt to change class or program before spending more time.
+
+The H1 submission helper (`bb/h1.py`, used by `bb submit`) needs extra packages:
+
+```powershell
+pip install -e .[h1]
+```
+
+Credentials come from the environment (`H1_USERNAME`, `H1_TOKEN`); nothing is auto-submitted —
+`bb submit` prints the payload, a human posts it.
+
 ## 8 Â· Integrations
 
 | Component | Role | Configuration |
