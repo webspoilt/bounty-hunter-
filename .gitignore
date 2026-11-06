@@ -15,6 +15,9 @@ data/findings/
 data/recon/
 data/proposed/
 data/logs/
+data/h1_disclosed/
+data/h1_disclosed.sqlite
+data/duplicates/
 data/telegram_offset
 data/*.accounts.json
 data/example.scope.json

@@ -579,6 +579,59 @@ def cmd_metrics(args) -> int:
     return 0
 
 
+def cmd_duplicate(args) -> int:
+    from bb import duplicate
+
+    if args.action == "pull":
+        duplicate.pull(args.dest or duplicate.H1_DATA, log=print)
+        if args.ingest:
+            duplicate.ingest_parquet(args.dest or duplicate.H1_DATA, log=print)
+        return 0
+
+    if args.action == "ingest":
+        result = duplicate.ingest_parquet(args.dir or duplicate.H1_DATA, log=print)
+        print(f"indexed {result['rows']} disclosed reports into {result['db']}")
+        return 0
+
+    if args.action == "stats":
+        idx = duplicate.DupIndex()
+        stats = idx.stats()
+        idx.close()
+        if not stats.get("rows"):
+            print("duplicate index is empty — run: bb duplicate pull --ingest")
+            return 1
+        print(f"reports: {stats['rows']}   fingerprint: {stats.get('fingerprint', '?')}")
+        print(f"dataset: {stats.get('dataset', '?')}   ingested: {stats.get('ingested_at', '?')}")
+        print(f"db: {duplicate.H1_INDEX}")
+        return 0
+
+    if args.action == "search":
+        idx = duplicate.DupIndex()
+        try:
+            rows = idx.search(args.query, team=args.team, asset=args.asset,
+                              weakness=args.weakness, k=args.k)
+        finally:
+            idx.close()
+        if not rows:
+            print("no disclosed matches")
+            return 0
+        for row in rows:
+            print(f"{row['score']:7.2f}  {row['team']:20} {row['weakness'][:28]:28} "
+                  f"{row['asset'][:35]:35} {row['title'][:70]}")
+            print(f"         {row['url']}")
+        return 0
+
+    if args.action == "check":
+        result = duplicate.check_finding(args.finding, Store(), k=args.k, log=print)
+        print(f"\nverdict: {result['verdict']}")
+        print(f"evidence: {result['evidence_path']}")
+        for row in result["matches"][:5]:
+            print(f"  {row['match_kind']:32} {row['url']}  {row['title'][:70]}")
+        return 0
+
+    return 1
+
+
 def cmd_artex(args) -> int:
     artex = Artex()
     if args.action == "status":
@@ -822,6 +875,28 @@ def build_parser() -> argparse.ArgumentParser:
     mt.add_argument("--program")
     mt.add_argument("--json", action="store_true")
     mt.set_defaults(func=cmd_metrics)
+
+    dp = sub.add_parser("duplicate", help="local disclosed-report prior and checklist")
+    dsub = dp.add_subparsers(dest="action", required=True)
+    dpp = dsub.add_parser("pull", help="download the official HackerOne dataset")
+    dpp.add_argument("--dest")
+    dpp.add_argument("--ingest", action="store_true", help="index after downloading")
+    dpp.set_defaults(func=cmd_duplicate)
+    dpi = dsub.add_parser("ingest", help="index local parquet files")
+    dpi.add_argument("--dir")
+    dpi.set_defaults(func=cmd_duplicate)
+    dsub.add_parser("stats", help="show the local index").set_defaults(func=cmd_duplicate)
+    dse = dsub.add_parser("search", help="search disclosed reports")
+    dse.add_argument("--query", required=True)
+    dse.add_argument("--team")
+    dse.add_argument("--asset")
+    dse.add_argument("--weakness")
+    dse.add_argument("--k", type=int, default=10)
+    dse.set_defaults(func=cmd_duplicate)
+    dch = dsub.add_parser("check", help="record a duplicate checklist for a finding")
+    dch.add_argument("--finding", required=True)
+    dch.add_argument("--k", type=int, default=8)
+    dch.set_defaults(func=cmd_duplicate)
     return p
 
 

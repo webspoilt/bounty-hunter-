@@ -12,6 +12,9 @@ DATA = Path(os.environ.get("BB_DATA", ROOT / "data"))
 
 DB_PATH = DATA / "bountybot.db"
 KB_PATH = DATA / "kb.json"
+H1_DATA = DATA / "h1_disclosed"
+H1_INDEX = DATA / "h1_disclosed.sqlite"
+DUPLICATES = DATA / "duplicates"
 SCOPES = DATA / "scopes"
 REPORTS = DATA / "reports"
 RECON = DATA / "recon"
