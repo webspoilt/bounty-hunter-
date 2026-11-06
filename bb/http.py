@@ -94,6 +94,32 @@ class ScopedClient:
             raise ValueError(f"relative URL {url!r} without a base_url")
         return str(httpx.URL(self.base_url).join(url))
 
+    def _attempt_gate(self, absolute: str, host: str, attempt: int) -> None:
+        """Safety gates applied to *every* outbound attempt, not just the first.
+
+        Retries re-check the kill switch and DNS resolution (both can change
+        between attempts), and each attempt counts against the request budget
+        and passes through the rate limiter.
+        """
+        if attempt > 0:
+            if killswitch.active():
+                reason = killswitch.reason() or "kill switch is armed"
+                if self.store:
+                    self.store.audit_scope(self.run_id, absolute, "STOP", reason, host)
+                raise killswitch.AbortRequested(
+                    f"{absolute} aborted on retry {attempt + 1}: {reason} "
+                    "(clear with `bb resume`)")
+            if self._resolve_dns and not self.dry_run:
+                dns = self.scope.verify_resolution(absolute)
+                if not dns.allowed:
+                    if self.store:
+                        self.store.audit_scope(self.run_id, absolute, "DENY",
+                                               f"dns guard (retry): {dns.reason}", dns.host)
+                    raise ScopeViolation(
+                        f"{absolute} refused by DNS guard on retry: {dns.reason}")
+        self._reserve()
+        self.sent += 1
+
     def request(self, method: str, url: str, *, headers: dict | None = None,
                 params: dict | None = None, json=None, data=None, content=None,
                 follow_redirects: bool = False) -> httpx.Response:
@@ -138,12 +164,12 @@ class ScopedClient:
             self.planned.append((req.method, str(req.url)))
             return httpx.Response(0, request=req)
 
-        self._reserve()
-        self.sent += 1
-
         started = time.monotonic()
         resp = None
         for attempt in range(3):
+            # Every outbound attempt re-crosses budget, deadline, rate-limit,
+            # kill-switch and DNS gates before it is actually sent.
+            self._attempt_gate(absolute, decision.host, attempt)
             try:
                 resp = self._client.send(req, follow_redirects=follow_redirects)
             except httpx.HTTPError as exc:
