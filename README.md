@@ -491,6 +491,7 @@ bb scope import --program acme --from file --file data/scopes/acme.json
 | `bb artex status\|push\|task` | dashboard bridge |
 | `bb submit --finding ID --team H` | print-only submission payload |
 | `bb telegram [--push-only]` | allow-listed review from a phone |
+| `bb duplicate pull\|ingest\|stats\|search\|check` | disclosed-report duplicate prior and checklist (`pip install -e .[h1]`) |
 
 ### 7.4 Accounts file
 
@@ -535,6 +536,39 @@ bb metrics
 
 `--dry-run` on the scenario prints every planned request first. `bb import har` never replays
 the capture; writes happen only in a scenario with `--allow-write`.
+
+### 7.6 Duplicate prevention
+
+Bountybot works hard not to produce or submit duplicates — of its own findings, of your
+earlier reports, or of what is already publicly disclosed:
+
+- **Disclosed-report index** (`bb/duplicate.py`) — `bb duplicate pull --ingest` downloads the
+  official HackerOne disclosed-reports dataset (parquet via `huggingface-hub`, pyarrow) and
+  builds a full-text local index (`data/h1_disclosed.sqlite`, content-cached, no re-chunking
+  on re-ingest). Query it with `bb duplicate search --query "id invoice"` (optionally
+  `--team/--asset/--weakness`, `--k`), and `bb duplicate stats` shows what is indexed.
+- **Checklist gate** — `bb duplicate check --finding ID` attaches an honest duplicate-check
+  note to a stored finding: how similar disclosed reports were and what your run's
+  duplicate rate is, before the report is ever drafted.
+- **Run-level dedup** — re-running a `hunt`/`auto` loop never re-claims a `done` task;
+  heartbeat claims expire only after `max_age_hours`.
+- **Finding-level dedup** — `store.find_duplicate(bug_class, url)` keeps the same bug class
+  against the same URL out of the queue; `bb kb ingest` content-hashes every chunk, and
+  HAR/Burp imports collapse the same file behind different cache-buster query strings.
+- **Duplicate-rate feedback** — record the program's decision with `bb outcome ID --status
+  duplicate`; `bb metrics` and `bb feedback` surface a rising duplicate rate as a prompt to
+  change class or program before spending more time.
+
+The disclosed-dataset tooling ships behind an optional extra (pyarrow + huggingface-hub):
+
+```powershell
+pip install -e .[h1]
+bb duplicate pull --ingest
+```
+
+The H1 submission helper (`bb/h1.py`, used by `bb submit`) needs only the base install;
+credentials come from the environment (`H1_USERNAME`, `H1_TOKEN`). Nothing is auto-submitted —
+`bb submit` prints the payload, a human posts it.
 
 ## 8 Â· Integrations
 
