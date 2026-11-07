@@ -11,6 +11,7 @@ Every request in this package goes through ScopedClient. It:
 from __future__ import annotations
 
 import random
+import threading
 import time
 
 import httpx
@@ -26,6 +27,44 @@ class BudgetExceeded(RuntimeError):
     pass
 
 
+class RequestBudget:
+    """Shared, thread-safe request accounting: count, deadline and pacing.
+
+    One budget per run, not per client: every client sharing a budget exhausts
+    ``max_requests`` collectively and paces at the budget's rate, so the polite
+    total stays the operator's setting no matter how many workers exist.
+    """
+
+    def __init__(self, rate: float = DEFAULT_RATE, max_requests: int | None = None,
+                 deadline: float | None = None):
+        self.rate = max(float(rate), 0.1)
+        self.max_requests = max_requests
+        self.deadline = deadline
+        self._used = 0
+        self._last = 0.0
+        self._lock = threading.Lock()
+
+    def consume(self) -> None:
+        """Count exactly one outbound attempt; sleep for global pacing."""
+        with self._lock:
+            if self.deadline is not None and time.monotonic() > self.deadline:
+                raise BudgetExceeded("time budget exhausted (shared)")
+            if self.max_requests is not None and self._used >= self.max_requests:
+                raise BudgetExceeded(
+                    f"request budget exhausted ({self.max_requests}, shared)")
+            interval = 1.0 / self.rate
+            wait = self._last + interval - time.monotonic()
+            if wait > 0:
+                time.sleep(wait + random.uniform(0, interval * 0.2))
+            self._last = time.monotonic()
+            self._used += 1
+
+    @property
+    def used(self) -> int:
+        with self._lock:
+            return self._used
+
+
 class ScopedClient:
     def __init__(self, scope: Scope, *, base_url: str | None = None, proxy: str | None = None,
                  timeout: float = DEFAULT_TIMEOUT, rate: float = DEFAULT_RATE,
@@ -33,12 +72,14 @@ class ScopedClient:
                  dry_run: bool = False, store=None, run_id: str | None = None,
                  tool: str = "http", verify: bool = True, user_agent: str | None = None,
                  transport: httpx.BaseTransport | None = None,
-                 resolve_dns: bool | None = None):
+                 resolve_dns: bool | None = None,
+                 shared: RequestBudget | None = None):
         self.scope = scope
         self.base_url = base_url
         self.rate = max(rate, 0.1)
         self.max_requests = max_requests
         self.deadline = deadline
+        self.shared = shared            # when set, count/deadline/pacing are collective
         self.dry_run = dry_run
         self.store = store
         self.run_id = run_id
@@ -75,6 +116,11 @@ class ScopedClient:
     # ---------- budget / pacing ----------
 
     def _reserve(self) -> None:
+        if self.shared is not None:
+            # A shared budget owns counting, deadline and pacing collectively:
+            # per-client caps would multiply with every worker (audit F1).
+            self.shared.consume()
+            return
         if self.deadline is not None and time.monotonic() > self.deadline:
             raise BudgetExceeded("time budget exhausted")
         if self.max_requests is not None and self.sent >= self.max_requests:
@@ -171,7 +217,11 @@ class ScopedClient:
             # kill-switch and DNS gates before it is actually sent.
             self._attempt_gate(absolute, decision.host, attempt)
             try:
-                resp = self._client.send(req, follow_redirects=follow_redirects)
+                # follow_redirects is pinned False on purpose: redirects are data
+                # here, never hops. A followed Location would leave scope with no
+                # scope/DNS/kill-switch revalidation; the open-redirect check
+                # records the header instead of chasing it (checks.py).
+                resp = self._client.send(req, follow_redirects=False)
             except httpx.HTTPError as exc:
                 if attempt == 2:
                     raise

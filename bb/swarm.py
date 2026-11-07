@@ -6,7 +6,7 @@ opposite, and it is what makes a large agent count safe and useful:
   * every unit of work has a fingerprint and is claimed atomically in SQLite, so two
     workers (or two runs) can never test the same route twice;
   * logical agents can be numbered 50+ while *network concurrency* is capped by the
-    request budget: per-worker rate = rate / workers, so the total stays at ``--rate``;
+    rate budget: all workers share one RequestBudget, so the total stays at ``--rate``;
   * each network worker gets its own scoped client and its own SQLite connection, so
     the scope predicate, DNS guard, kill switch, and redaction apply unchanged;
   * no LLM is used by any worker, so a 50-agent run costs exactly nothing in tokens;
@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 
 from bb import normalize
 from bb.checks import CheckOptions, Checker, SKIP_PATH_RE, REDIRECT_PARAMS
-from bb.http import ScopedClient
+from bb.http import RequestBudget, ScopedClient
 from bb.scope import Scope
 from bb.store import Store
 
@@ -174,7 +174,12 @@ def run_tasks(tasks: list[Task], executor, store: Store, run_id: str,
 
 
 class SwarmExecutor:
-    """Per-thread scoped clients + checker; no shared httpx client, no shared connection."""
+    """Per-thread scoped clients + checker over ONE shared traffic budget.
+
+    Worker threads get their own client and SQLite connection, but counting,
+    deadline and pacing are collective: whatever the thread count, the run
+    never exceeds ``max_requests`` requests at a combined ``rate`` req/s.
+    """
 
     def __init__(self, scope: Scope, run_id: str, base_url: str, roles: list,
                  options: CheckOptions, *, rate: float, max_requests: int | None,
@@ -189,6 +194,8 @@ class SwarmExecutor:
         self.deadline = deadline
         self.proxy = proxy
         self.log = log
+        self.budget = RequestBudget(rate=rate, max_requests=max_requests,
+                                    deadline=deadline)
         self._local = threading.local()
         self._clients: list[ScopedClient] = []
         self._stores: list[Store] = []
@@ -201,8 +208,8 @@ class SwarmExecutor:
         store = Store()
         client = ScopedClient(self.scope, base_url=self.base_url, proxy=self.proxy,
                               rate=self.rate, max_requests=self.max_requests,
-                              deadline=self.deadline, store=store, run_id=self.run_id,
-                              tool="swarm")
+                              deadline=self.deadline, shared=self.budget,
+                              store=store, run_id=self.run_id, tool="swarm")
         checker = Checker(client, store, self.run_id, self.scope, roles=self.roles,
                           options=self.options, log=lambda *a, **k: None)
         with self._lock:
@@ -256,4 +263,4 @@ def format_plan(tasks: list[Task], workers: int, rate: float) -> str:
         counts, key=lambda n: CHECK_ORDER.get(n, 9)))
     return (f"{len(tasks)} task(s): {parts or '(none)'}\n"
             f"logical workers: {workers}; concurrent network workers: "
-            f"{effective_workers(workers, rate)} (rate {rate:g} req/s stays the total)")
+            f"{effective_workers(workers, rate)} (one shared budget, total {rate:g} req/s)")

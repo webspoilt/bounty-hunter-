@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from pathlib import Path
 
@@ -92,7 +93,17 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
+        # Schema setup happens on every concurrent worker opening the same DB
+        # (swarm threads, CLI tools); a hung "database is locked" here must
+        # retry and eventually surface, never leave a worker half-initialized.
+        for attempt in range(6):
+            try:
+                self.conn.executescript(SCHEMA)
+                break
+            except sqlite3.OperationalError as exc:
+                if attempt == 5 or "locked" not in str(exc).lower():
+                    raise
+                time.sleep(0.5 * (attempt + 1))
 
     def close(self) -> None:
         self.conn.close()
@@ -289,9 +300,28 @@ class Store:
             if row["state"] in ("failed", "skipped") and row["attempts"] >= max_attempts:
                 self.conn.commit()
                 return False
+            # Resurrecting a stale done/retryable failed task must be atomic:
+            # another process may have claimed it after our read. Guard the
+            # UPDATE on the exact observed state + timestamp/attempts, so a
+            # lost race updates nothing and returns False instead of
+            # double-claiming. (SQLite applies SET clauses against the
+            # original row values, so no "attempts=0, attempts=attempts+1"
+            # chaining: the stale branch sets the definitive value.)
             if stale:
-                self.conn.execute(
-                    "UPDATE tasks SET attempts=0, result=NULL WHERE fingerprint=?", (fp,))
+                cur = self.conn.execute(
+                    "UPDATE tasks SET attempts=1, result=NULL, state='running', "
+                    "run_id=COALESCE(run_id, ?), updated_at=? "
+                    "WHERE fingerprint=? AND state='done' AND updated_at IS ?",
+                    (run_id, now, fp, row["updated_at"]))
+            else:
+                cur = self.conn.execute(
+                    "UPDATE tasks SET attempts=attempts+1, state='running', "
+                    "run_id=COALESCE(run_id, ?), updated_at=? "
+                    "WHERE fingerprint=? AND state IN ('failed','skipped') AND attempts = ?",
+                    (run_id, now, fp, row["attempts"]))
+            self.conn.commit()
+            return cur.rowcount == 1
+        # fresh insert from INSERT OR IGNORE: this caller owns the row
         self.conn.execute(
             "UPDATE tasks SET state='running', attempts=attempts+1, run_id=COALESCE(run_id, ?), "
             "updated_at=? WHERE fingerprint=?", (run_id, now, fp))

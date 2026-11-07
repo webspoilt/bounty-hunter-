@@ -22,7 +22,7 @@ from bb import analyze, cve, feedback, learn, normalize, swarm, waf
 from bb.checks import CheckOptions, Checker, dedupe_findings
 from bb.config import DEFAULT_MAX_REQUESTS, DEFAULT_RATE, DEFAULT_TIMEOUT, ensure_dirs, now_iso
 from bb.gate import ApprovalGate
-from bb.http import BudgetExceeded, ScopedClient
+from bb.http import BudgetExceeded, RequestBudget, ScopedClient
 from bb.killswitch import active as kill_active
 from bb.models import Finding, sev_rank
 from bb.recon import Recon
@@ -106,12 +106,16 @@ class AutoHunter:
             meta={"autonomous": True, "llm": self.cfg.llm, "workers": self.cfg.workers}
         )
 
+        # one shared budget for every phase-1..7 client: recon and investigation
+        # together cannot exceed --max-requests or the global rate (audit F1)
+        budget = RequestBudget(rate=self.cfg.rate, max_requests=self.cfg.max_requests)
+
         # Phase 1: Recon & Discovery
         self.log("[1/7] Surface discovery: crawling entrypoints, JS bundles, and OpenAPI schemas...")
         recon_client = ScopedClient(self.cfg.scope, proxy=self.cfg.proxy, timeout=self.cfg.timeout,
                                     rate=self.cfg.rate, max_requests=self.cfg.max_requests,
                                     dry_run=self.cfg.dry_run, store=self.store, run_id=self.run_id,
-                                    tool="auto_recon")
+                                    tool="auto_recon", shared=budget)
         recon = Recon(recon_client, self.store, self.run_id, self.cfg.scope, log=self.log)
         endpoints = []
         for entry in self.cfg.entry_urls:
@@ -162,7 +166,8 @@ class AutoHunter:
 
         client = ScopedClient(self.cfg.scope, proxy=self.cfg.proxy, timeout=self.cfg.timeout,
                               rate=self.cfg.rate, max_requests=self.cfg.max_requests,
-                              dry_run=self.cfg.dry_run, store=self.store, run_id=self.run_id, tool="auto_hunter")
+                              dry_run=self.cfg.dry_run, store=self.store, run_id=self.run_id,
+                              tool="auto_hunter", shared=budget)
         checker = Checker(client, self.store, self.run_id, self.cfg.scope, roles=roles,
                           options=self.cfg.check_options, log=self.log)
         discovered_findings = checker.run_all(self.cfg.entry_urls, endpoints)
