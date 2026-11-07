@@ -19,6 +19,16 @@ documented. Check convention: `[ ]` planned, `[*]` in progress, `[x]` done.
   - [x] Fixed latent `Store.update_finding` crash (v2.6.0 bug) — persists via `Store.update_meta` now.
   - [x] Docs: README §5.9 + commands row; CHANGELOG Unreleased. **201/201 tests pass.**
 
+- [x] **P0 — Repository baseline audit + safety fixes** (2026-11-07)
+  - [x] Part A: full audit of every outbound HTTP path, budget/pacing, kill-switch, redirects, DNS revalidation, task claims, scenario writes, redaction, finding lifecycle, verification independence, Ollama support → `docs/V2_REPOSITORY_AUDIT.md` (17 sections, code-referenced).
+  - [x] Part B, only audit-confirmed defects:
+    - F1 shared global request budget (`RequestBudget` in `bb/http.py`; auto phases share one budget; every swarm worker shares one budget) — was N×`max_requests`/N×rate across workers.
+    - F2 redirects pinned unfollowable at the choke point (`send()` forces `follow_redirects=False`; argument ignored with documented rationale).
+    - F3 atomic task re-claims (conditional guard on observed state/timestamp/attempt count; lost race returns False) + bounded retry on concurrent `Store.__init__` schema creation.
+  - [x] Deliberately untouched (verified correct): per-attempt accounting, kill-switch rechecks, DNS revalidation, evidence redaction, scenario write approval + cleanup failure recording, verification independence.
+  - [x] Regression tests: `tests/test_p0_safety.py` (9 tests). Full suite **210/210 pass**, network-free.
+  - [x] Documented-not-fixed risks (audit §17): cbh subprocess outside budget; stale `running` claims never recover; swarm still unwired from auto (→ M4 corrects this); h1/telegram/ollama paths not kill-switch-coupled.
+
 ## Backlog (planned milestones, smallest first)
 
 - [ ] **M2 — Tev1 at the verification gate** (`bb/verify.py`): structured

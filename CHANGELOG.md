@@ -28,6 +28,22 @@ to a platform — the human approval gate stays closed.
   analysis/queue phase — any run with findings and `--ai` crashed there.
   Persist now goes through `Store.update_meta`; regression-tested by the
   end-to-end phase-7 tests.
+- **Shared global request budget** (`RequestBudget`, audit fix F1): per-client
+  caps multiplied with every worker — auto's recon + investigation phases
+  allowed 2x `--max-requests`, and each swarm worker got a full budget with
+  full rate (N x requests, N x pacing). One budget is now shared across all
+  clients of a run; count, deadline and pacing are collective.
+- **Redirect following pinned off** (audit fix F2): `ScopedClient.send()` now
+  hardcodes `follow_redirects=False` — a followed `Location` could otherwise
+  leave scope with no scope/DNS/kill-switch revalidation. Redirects stay
+  data (the open-redirect check records the header, never chases it).
+- **Atomic task re-claims** (audit fix F3): stale-`done` / retryable-`failed`
+  resurrection in `Store.task_claim` used an unconditional `UPDATE` — two
+  racing workers could both claim the same task. The update is now guarded
+  on the exactly observed state/timestamp/attempt count; a lost race returns
+  `False`. Concurrent `Store.__init__` schema creation retries on
+  "database is locked" instead of killing the worker. Added regression
+  module `tests/test_p0_safety.py` (9 tests); full suite 210/210 pass.
 
 ## [2.6.0] — 2026-11-06
 
