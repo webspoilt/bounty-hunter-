@@ -260,11 +260,13 @@ class Store:
 
     def task_claim(self, kind: str, target: str, run_id: str | None = None,
                    fingerprint: str | None = None, max_attempts: int = 3,
-                   max_age_hours: float | None = None) -> bool:
+                   max_age_hours: float | None = None,
+                   lease_seconds: float | None = None) -> bool:
         """Claim a unit of work exactly once across every worker and every run.
 
         Returns True only when this caller inserted the task, resurrected a failed
-        one, or re-claimed a ``done`` task older than ``max_age_hours``. A duplicate
+        one, or re-claimed a ``done`` task older than ``max_age_hours``, or recovered
+        a stale ``running`` task whose lease expired past ``lease_seconds``. A duplicate
         fingerprint that is pending/running/done returns False, which is the whole
         point: 50 workers cannot do the same job twice.
         """
@@ -294,10 +296,24 @@ class Store:
                     stale = datetime.now(timezone.utc) - seen > timedelta(hours=max_age_hours)
                 except (TypeError, ValueError):
                     stale = True
-            if row["state"] not in ("failed", "skipped") and not stale:
+
+            expired_lease = False
+            if lease_seconds is not None and row["state"] == "running":
+                try:
+                    seen = datetime.fromisoformat(row["updated_at"])
+                    if seen.tzinfo is None:
+                        seen = seen.replace(tzinfo=timezone.utc)
+                    expired_lease = datetime.now(timezone.utc) - seen > timedelta(seconds=lease_seconds)
+                except (TypeError, ValueError):
+                    expired_lease = True
+
+            if row["state"] not in ("pending", "failed", "skipped") and not stale and not expired_lease:
                 self.conn.commit()
                 return False
             if row["state"] in ("failed", "skipped") and row["attempts"] >= max_attempts:
+                self.conn.commit()
+                return False
+            if expired_lease and row["attempts"] >= max_attempts:
                 self.conn.commit()
                 return False
             # Resurrecting a stale done/retryable failed task must be atomic:
@@ -313,11 +329,17 @@ class Store:
                     "run_id=COALESCE(run_id, ?), updated_at=? "
                     "WHERE fingerprint=? AND state='done' AND updated_at IS ?",
                     (run_id, now, fp, row["updated_at"]))
+            elif expired_lease:
+                cur = self.conn.execute(
+                    "UPDATE tasks SET attempts=attempts+1, state='running', "
+                    "run_id=COALESCE(run_id, ?), updated_at=? "
+                    "WHERE fingerprint=? AND state='running' AND updated_at IS ?",
+                    (run_id, now, fp, row["updated_at"]))
             else:
                 cur = self.conn.execute(
                     "UPDATE tasks SET attempts=attempts+1, state='running', "
                     "run_id=COALESCE(run_id, ?), updated_at=? "
-                    "WHERE fingerprint=? AND state IN ('failed','skipped') AND attempts = ?",
+                    "WHERE fingerprint=? AND state IN ('pending','failed','skipped') AND attempts = ?",
                     (run_id, now, fp, row["attempts"]))
             self.conn.commit()
             return cur.rowcount == 1
@@ -327,6 +349,66 @@ class Store:
             "updated_at=? WHERE fingerprint=?", (run_id, now, fp))
         self.conn.commit()
         return True
+
+    def task_renew(self, fingerprint: str) -> bool:
+        """Renew active lease on a running task by updating its updated_at timestamp."""
+        now = now_iso()
+        cur = self.conn.execute(
+            "UPDATE tasks SET updated_at=? WHERE fingerprint=? AND state='running'",
+            (now, fingerprint))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_task(self, fingerprint: str) -> dict | None:
+        """Fetch a single task record by its fingerprint."""
+        row = self.conn.execute(
+            "SELECT * FROM tasks WHERE fingerprint=?", (fingerprint,)).fetchone()
+        if not row:
+            return None
+        rec = dict(row)
+        rec["result"] = json.loads(rec["result"] or "{}")
+        return rec
+
+    def recover_stale_tasks(self, lease_seconds: float = 300.0,
+                            run_id: str | None = None) -> int:
+        """Reset running tasks with expired leases back to pending for re-execution."""
+        from datetime import datetime, timedelta, timezone
+        now = now_iso()
+        now_dt = datetime.now(timezone.utc)
+        clauses = ["state='running'"]
+        args = []
+        if run_id:
+            clauses.append("run_id=?")
+            args.append(run_id)
+        where = " WHERE " + " AND ".join(clauses)
+        rows = self.conn.execute(f"SELECT fingerprint, updated_at FROM tasks{where}", args).fetchall()
+        recovered = 0
+        for r in rows:
+            try:
+                seen = datetime.fromisoformat(r["updated_at"])
+                if seen.tzinfo is None:
+                    seen = seen.replace(tzinfo=timezone.utc)
+                if now_dt - seen > timedelta(seconds=lease_seconds):
+                    cur = self.conn.execute(
+                        "UPDATE tasks SET state='pending', updated_at=? "
+                        "WHERE fingerprint=? AND state='running' AND updated_at IS ?",
+                        (now, r["fingerprint"], r["updated_at"]))
+                    if cur.rowcount > 0:
+                        recovered += 1
+            except (TypeError, ValueError):
+                pass
+        self.conn.commit()
+        return recovered
+
+    def update_run(self, run_id: str, **meta_updates) -> dict:
+        """Merge key-value pairs into the run's metadata json."""
+        row = self.conn.execute("SELECT meta FROM runs WHERE id=?", (run_id,)).fetchone()
+        merged = json.loads(row["meta"] or "{}") if row else {}
+        merged.update(meta_updates)
+        self.conn.execute("UPDATE runs SET meta=? WHERE id=?",
+                          (json.dumps(merged), run_id))
+        self.conn.commit()
+        return merged
 
     def task_finish(self, fingerprint: str, state: str = "done", result: dict | None = None) -> None:
         self.conn.execute(

@@ -29,6 +29,17 @@ documented. Check convention: `[ ]` planned, `[*]` in progress, `[x]` done.
   - [x] Regression tests: `tests/test_p0_safety.py` (9 tests). Full suite **210/210 pass**, network-free.
   - [x] Documented-not-fixed risks (audit §17): cbh subprocess outside budget; stale `running` claims never recover; swarm still unwired from auto (→ M4 corrects this); h1/telegram/ollama paths not kill-switch-coupled.
 
+- [x] **P2 — Bounty Hunter V2 Persistent Controller** (2026-11-07)
+  - [x] State machine (`bb/orchestrator/lifecycle.py`): 11 explicit, validated, persisted states (`DISCOVERING`, `MAPPING`, `ANALYZING`, `PLANNING`, `POLICY_REVIEW`, `EXECUTING`, `VERIFYING`, `LEARNING`, `COMPLETED`, `PAUSED`, `ABORTED`).
+  - [x] Tev1 decision gateway (`bb/decision/gateway.py`): bounded advisory recommendations (task prioritization, specialist selection, model selection, triage) with strict candidate set validation and deterministic fallbacks. Authority boundaries strictly enforced.
+  - [x] Specialist Agent Registry (`bb/orchestrator/agent_registry.py`): pre-registered vetted specialists (`surface_mapper`, `parameter_analyst`, `auth_analyst`, `differential_tester`, `security_prober`, `verifier`, `report_agent`) with capability flags. Tev1 cannot register arbitrary agents.
+  - [x] Resource manager & security policy (`bb/orchestrator/resource_manager.py`): scope enforcement, kill-switch halting, shared request budget limits, verification backlog guard, and human approval requirement for state-changing writes.
+  - [x] Atomic scheduler & recovery (`bb/orchestrator/scheduler.py` & `bb/store.py`): task leases (`lease_seconds`), atomic claims, lease renewal, and automatic stale lease recovery across crashes and restarts.
+  - [x] Investigation planner (`bb/orchestrator/planner.py`): candidate discovery, eligibility filtering, compact decision state building, and bounded investigation plans.
+  - [x] Persistent controller loop (`bb/orchestrator/controller.py`): explicit 18-step loop integrating discovery, planning, Tev1 ranking, policy validation, execution, evidence persistence, independent verification, and learning updates.
+  - [x] CLI & AutoHunter integration: `bb controller run/status/pause/resume/abort` and `bb auto --controller` (default).
+  - [x] Regression tests (`tests/test_controller.py`): 15 comprehensive tests covering all 12 required test conditions. Full suite **225/225 pass**.
+
 ## Backlog (planned milestones, smallest first)
 
 - [ ] **M2 — Tev1 at the verification gate** (`bb/verify.py`): structured

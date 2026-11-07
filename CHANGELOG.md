@@ -10,6 +10,17 @@ to a platform — the human approval gate stays closed.
 
 ### Added
 
+- **Persistent Research Controller & Orchestrator** (b/orchestrator/, task P2):
+  - LifecycleManager (b/orchestrator/lifecycle.py) enforcing an 11-state validated state machine (DISCOVERING, MAPPING, ANALYZING, PLANNING, POLICY_REVIEW, EXECUTING, VERIFYING, LEARNING, COMPLETED, PAUSED, ABORTED) with audit logging and full state persistence in SQLite runs.
+  - DecisionGateway (b/decision/gateway.py) wrapping local Tev1 for advisory task prioritization, specialist selection, reasoning model selection, and finding triage with strict option validation and deterministic fallback. Authority boundaries strictly enforced (no scope modifications, no arbitrary task or agent creation, no report submissions).
+  - AgentRegistry (b/orchestrator/agent_registry.py) maintaining a vetted registry of specialized agents (surface_mapper, parameter_analyst, auth_analyst, differential_tester, security_prober, verifier, report_agent) with explicit capabilities. Tev1 cannot register arbitrary agents.
+  - ResourceManager and SecurityPolicy (b/orchestrator/resource_manager.py) strictly enforcing scope, DNS anti-rebinding, global kill switch, shared request budget limits, verification backlog thresholding, and mandatory human approval gates for state-changing write operations.
+  - Scheduler (b/orchestrator/scheduler.py) and atomic task lease extensions in Store (b/store.py): atomic claims with lease duration (lease_seconds), heartbeat renewal (	ask_renew), and automatic recovery of orphaned running tasks after process crash or restart.
+  - Planner (b/orchestrator/planner.py) creating bounded investigation plans and compact redacted context for Tev1.
+  - Controller (b/orchestrator/controller.py) coordinating the 18-step persistent investigation loop with support for pause, resume, step-by-step execution, and crash recovery.
+  - Integrated into b auto via --controller (enabled by default) and dedicated CLI command b controller {status,pause,resume,abort,run}.
+  - 15 new regression tests in 	ests/test_controller.py; full suite 225/225 pass.
+
 - **Tev1 structured decision client** (`bb/tev1.py`) — local decision calls to
   Ollama's `/v1/systemone` decision endpoint (model tag `tev1:0.8b`) with a
   strict validated contract: every reply choice is checked against the exact
