@@ -361,6 +361,25 @@ report actually left the machine; otherwise the outcome is recorded and decided,
 counted in the `submitted` metric. A duplicate can be found before submitting, and an informative
 triage note is not a submission.
 
+### 5.9 Structured decision model (Tev1)
+
+Triage needs a choice, not prose. `bb auto` consults a local structured decision client
+(`bb/tev1.py`) that asks Ollama's `/v1/systemone` decision endpoint (model tag `tev1:0.8b`)
+to pick exactly one verdict option for each finding before it is queued; the helper appends
+`none`/`defer` so abstaining is always available, and every reply is validated against the
+exact option list supplied by the engine.
+
+Runtime honesty is a design goal: the client probes both the runtime (`/api/version`,
+`/api/tags` model digest) and the decision contract, records model tag, digest, Ollama
+version and contract version with every decision, and returns a deterministic fallback
+(whose reason travels with the result) whenever the endpoint is missing, the model is not
+installed, or the reply is schema-invalid. Confidence is advisory metadata; it can never
+grant authorization, and the decision model cannot change scope, request limits or
+kill-switch state. The context sent is compact and structured — redacted, truncated, and
+free of response bodies. If your Ollama does not serve the Tev1 contract, `bb integrations`
+reports the miss and the loop runs unchanged on the deterministic fallback; `--no-tev1`
+skips the consultation entirely.
+
 ## 6 Â· Evaluation
 
 **Setup.** Reference machine: Windows, Python 3.12.10, `httpx` 0.28.1, local Ollama
@@ -492,6 +511,7 @@ bb scope import --program acme --from file --file data/scopes/acme.json
 | `bb submit --finding ID --team H` | print-only submission payload |
 | `bb telegram [--push-only]` | allow-listed review from a phone |
 | `bb duplicate pull\|ingest\|stats\|search\|check` | disclosed-report duplicate prior and checklist (`pip install -e .[h1]`) |
+| `bb auto ... --no-tev1` / `--no-ai` | autonomous loop; Tev1 structured triage decisions and LLM analysis are independently skippable |
 
 ### 7.4 Accounts file
 

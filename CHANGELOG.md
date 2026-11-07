@@ -6,6 +6,29 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 Releases are tags on `master`/`main`; nothing in any release submits a report
 to a platform — the human approval gate stays closed.
 
+## [Unreleased]
+
+### Added
+
+- **Tev1 structured decision client** (`bb/tev1.py`) — local decision calls to
+  Ollama's `/v1/systemone` decision endpoint (model tag `tev1:0.8b`) with a
+  strict validated contract: every reply choice is checked against the exact
+  supplied options (plus `none`/`defer`), contract version/model tag/model
+  digest/Ollama version recorded with each decision, and a deterministic
+  fallback with an explaining reason whenever the endpoint or model is
+  missing or schema-invalid. Ordinary chat completion is never used as a
+  substitute; state sent is compact, redacted and free of response bodies.
+  `bb auto` records the validated triage recommendation in
+  `finding.meta["tev1_triage"]`; `--no-tev1` skips it. `bb integrations`
+  reports the endpoint's true availability.
+
+### Fixed
+
+- `AutoHunter` (v2.6.0) called a non-existent `Store.update_finding` in the
+  analysis/queue phase — any run with findings and `--ai` crashed there.
+  Persist now goes through `Store.update_meta`; regression-tested by the
+  end-to-end phase-7 tests.
+
 ## [2.6.0] — 2026-11-06
 
 ### Added

@@ -64,6 +64,20 @@ def probe_all() -> list[dict]:
             out.append({"name": name, "ok": True, "url": url, "detail": f"HTTP {r.status_code}"})
         except httpx.HTTPError:
             out.append({"name": name, "ok": False, "url": url, "detail": "not running"})
+
+    from bb.tev1 import Tev1Client
+    try:
+        tc = Tev1Client(timeout=3.0)
+        rp = tc.probe()
+        tc.close()
+        ok = bool(rp.get("endpoint_ok"))
+        detail = (f"{rp['model']} / {rp.get('digest')[:12] or 'no-digest'} "
+                  f"@ ollama {rp.get('ollama_version') or '?'}; {rp.get('detail')}"
+                  + ("" if ok else "; deterministic fallback in use"))
+        out.append({"name": "tev1", "ok": ok, "url": rp["endpoint"], "detail": detail})
+    except Exception as exc:
+        out.append({"name": "tev1", "ok": False, "url": OLLAMA + "/v1/systemone",
+                    "detail": f"probe failed: {exc}"})
     return out
 
 

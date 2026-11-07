@@ -803,6 +803,7 @@ def cmd_auto(args) -> int:
         cve_match=not args.no_cve,
         ai_analysis=not args.no_ai,
         queue=not args.no_queue,
+        tev1=not args.no_tev1,
     )
     hunter = AutoHunter(cfg)
     res = hunter.run()
@@ -1125,6 +1126,8 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--no-waf", action="store_true")
     au.add_argument("--no-cve", action="store_true")
     au.add_argument("--no-ai", action="store_true")
+    au.add_argument("--no-tev1", action="store_true",
+                    help="skip the structured decision model (Tev1)")
     au.add_argument("--no-queue", action="store_true")
     au.set_defaults(func=cmd_auto)
 

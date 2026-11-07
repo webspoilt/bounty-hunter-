@@ -29,6 +29,7 @@ from bb.recon import Recon
 from bb.scope import Scope
 from bb.session import Role, login_roles
 from bb.store import Store
+from bb import tev1
 from bb.verify import verify_candidates
 
 
@@ -50,6 +51,7 @@ class AutoHunterConfig:
     cve_match: bool = True
     ai_analysis: bool = True
     queue: bool = True
+    tev1: bool = True
     check_options: CheckOptions = field(default_factory=CheckOptions)
 
 
@@ -60,6 +62,36 @@ class AutoHunter:
         self.log = log
         self.run_id = f"auto-{now_iso().replace(':', '').replace('-', '')[:15]}"
         self.findings: list[Finding] = []
+
+    def _tev1_triage(self, f: Finding) -> dict:
+        """Structured triage recommendation. Validated choice, advisory only.
+
+        The context is a compact structured summary — no response bodies, no
+        evidence dumps, no credentials. Every option from the engine is
+        validated; whatever Tev1 recommends, the human gate still decides.
+        """
+        from urllib.parse import urlsplit
+        ctx = {
+            "bug_class": f.bug_class,
+            "severity": f.severity,
+            "confidence": f.confidence,
+            "status": f.status,
+            "path": (urlsplit(f.url or "").path or "/"),
+            "evidence_count": len(f.evidence),
+            "similarity": f.meta.get("similarity"),
+            "verified": bool(f.meta.get("verified")),
+        }
+        try:
+            return tev1.decide(
+                "auto-triage",
+                list(analyze.VERDICTS) + ["defer", "none"],
+                ctx,
+                question="recommend a triage verdict for this finding",
+                default="none",
+            )
+        except Exception as exc:
+            return {"decision_point": "auto-triage", "source": "deterministic-fallback",
+                    "choice": "none", "reason": f"decision client error: {exc}"}
 
     def run(self) -> dict:
         if kill_active():
@@ -164,17 +196,21 @@ class AutoHunter:
         gate = ApprovalGate(self.store)
         priors = feedback.class_priors(self.store, program=self.cfg.program)
         for f in deduped:
+            if self.cfg.tev1:
+                decision = self._tev1_triage(f)
+                f.meta["tev1_triage"] = decision
+                self.store.update_meta(f.id, tev1_triage=decision)
             if self.cfg.ai_analysis:
                 try:
                     analysis = analyze.analyze(f, use_llm=self.cfg.llm)
                     f.meta["ai_analysis"] = analysis
-                    self.store.update_finding(f)
+                    self.store.update_meta(f.id, ai_analysis=analysis)
                 except Exception:
                     pass
             if self.cfg.queue:
                 weight = priors.get(f.bug_class, {}).get("weight", 0.5)
                 f.meta["feedback_weight"] = weight
-                self.store.update_finding(f)
+                self.store.update_meta(f.id, feedback_weight=weight)
                 gate.submit(f.id, channel="autonomous")
 
         self.store.finish_run(self.run_id)
