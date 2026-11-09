@@ -13,6 +13,7 @@ import json
 import os
 import socket
 import sys
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ ERROR_INVALID_PARAMETER = 87
 ERROR_ACCESS_DENIED = 5
 
 _kernel32 = None
+_WORKTREE_LOCK_MUTEX = threading.Lock()
 
 
 def _get_kernel32():
@@ -220,40 +222,42 @@ class WorktreeLock:
         force: bool = False,
     ) -> bool:
         """Acquire single-writer lock. If held by another active process, fails unless force=True."""
-        info = self.get_info()
-        if info and not force:
-            if not self.is_stale(info):
-                if info.get("owner") != owner or info.get("pid") != os.getpid():
-                    return False
+        with _WORKTREE_LOCK_MUTEX:
+            info = self.get_info()
+            if info and not force:
+                if not self.is_stale(info):
+                    if info.get("owner") != owner or info.get("pid") != os.getpid():
+                        return False
 
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "owner": owner,
-            "task_id": task_id,
-            "pid": os.getpid(),
-            "hostname": socket.gethostname(),
-            "worktree": str(self.worktree_dir.resolve()),
-            "acquired_at": now_iso(),
-        }
-        with open(self.lock_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-        return True
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "owner": owner,
+                "task_id": task_id,
+                "pid": os.getpid(),
+                "hostname": socket.gethostname(),
+                "worktree": str(self.worktree_dir.resolve()),
+                "acquired_at": now_iso(),
+            }
+            with open(self.lock_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2)
+            return True
 
     def release(self, owner: str = "", force: bool = False) -> bool:
         """Release lock. Succeeds if owner matches or force=True."""
-        info = self.get_info()
-        if not info:
-            return True
+        with _WORKTREE_LOCK_MUTEX:
+            info = self.get_info()
+            if not info:
+                return True
 
-        if not force and owner and info.get("owner") != owner:
-            return False
+            if not force and owner and info.get("owner") != owner:
+                return False
 
-        try:
-            if self.lock_path.exists():
-                self.lock_path.unlink()
-            return True
-        except Exception:
-            return False
+            try:
+                if self.lock_path.exists():
+                    self.lock_path.unlink()
+                return True
+            except Exception:
+                return False
 
     def is_held_by(self, owner: str, pid: int | None = None) -> bool:
         """Check if lock is actively held by a specific owner (and optional PID)."""

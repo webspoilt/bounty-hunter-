@@ -397,9 +397,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
             routes = self.store.routes()
             return self._json(routes)
 
-        if url.path == "/api/learning":
-            report = learn.learning_report(self.store)
-            return self._json(report)
+        if url.path == "/api/status":
+            from bb import tev1, llm
+            from bb.coder.adapter import QwenCoderAdapter
+            from bb.decision.evaluator import DecisionEvaluator
+
+            # Tev1 local status
+            tev1_client = tev1.Tev1Client()
+            tev1_report = None
+            try:
+                tev1_report = tev1_client.probe()
+            except Exception:
+                tev1_report = {"endpoint_ok": False, "detail": "unavailable"}
+            finally:
+                tev1_client.close()
+
+            # Qwen status
+            qwen_adapter = QwenCoderAdapter()
+            qwen_ok = False
+            qwen_models = []
+            try:
+                qwen_ok = qwen_adapter.is_available()
+                if qwen_ok:
+                    qwen_models = qwen_adapter.get_installed_models()
+            except Exception:
+                pass
+
+            # Recent run & tasks
+            latest_run = self.store.conn.execute("SELECT * FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
+            run_dict = dict(latest_run) if latest_run else None
+            task_counts = self.store.task_counts(run_dict["id"]) if run_dict else {}
+            findings = self.store.findings(run_id=run_dict["id"]) if run_dict else []
+            candidate_count = sum(1 for f in findings if f.status == "candidate")
+
+            # Decision eval
+            evaluator = DecisionEvaluator()
+            eval_report = evaluator.generate_report(run_id=run_dict["id"] if run_dict else None)
+
+            return self._json({
+                "controller": {
+                    "run_id": run_dict["id"] if run_dict else "none",
+                    "program": run_dict["program"] if run_dict else "none",
+                    "target": run_dict["target"] if run_dict else "none",
+                    "started_at": run_dict["started_at"] if run_dict else None,
+                },
+                "models": {
+                    "tev1": {
+                        "model": tev1_report.get("model", "tev1:0.8b"),
+                        "available": bool(tev1_report.get("endpoint_ok")),
+                        "detail": tev1_report.get("detail", "unavailable"),
+                        "ollama_version": tev1_report.get("ollama_version") or "unavailable",
+                    },
+                    "qwen": {
+                        "available": qwen_ok,
+                        "installed_models": qwen_models,
+                        "detail": "ready" if qwen_ok else "unavailable",
+                    },
+                },
+                "tasks": task_counts,
+                "verification_backlog": candidate_count,
+                "human_queue_pending": len(self.gate.pending()),
+                "decision_evaluation": eval_report,
+                "killswitch": {
+                    "active": killswitch.active(),
+                    "reason": killswitch.reason(),
+                },
+            })
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
 
@@ -425,7 +488,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         if url.path == "/api/killswitch/stop":
             reason = payload.get("reason", "manual stop from dashboard UI")
-            killswitch.arm(reason)
+            killswitch.activate(reason)
             return self._json({"status": "stopped", "reason": reason})
 
         if url.path == "/api/killswitch/resume":

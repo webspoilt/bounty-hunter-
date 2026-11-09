@@ -13,6 +13,7 @@ import pytest
 
 from bb.coder.adapter import QwenCoderAdapter, _CODER_SEMAPHORE
 from bb.coder.manifest import TaskManifest
+from bb.config import now_iso
 from bb.coder.provider import (
     ERROR_ACCESS_DENIED,
     ERROR_INVALID_PARAMETER,
@@ -162,7 +163,7 @@ def test_worktree_lock_live_lock_preservation(temp_env):
         "task_id": "TASK-LIVE",
         "pid": 55555,
         "hostname": "localhost",
-        "acquired_at": "2026-11-07T00:00:00+00:00",
+        "acquired_at": now_iso(),
     }
     with open(temp_env["lock"], "w", encoding="utf-8") as f:
         json.dump(payload, f)
@@ -182,7 +183,7 @@ def test_worktree_lock_unknown_status_preserves_lock(temp_env):
         "task_id": "TASK-UNCERTAIN",
         "pid": 77777,
         "hostname": "localhost",
-        "acquired_at": "2026-11-07T00:00:00+00:00",
+        "acquired_at": now_iso(),
     }
     with open(temp_env["lock"], "w", encoding="utf-8") as f:
         json.dump(payload, f)
@@ -488,9 +489,10 @@ def test_old_provider_cannot_work_after_lock_transfer(temp_env):
 def test_qwen_adapter_model_resolution():
     adapter = QwenCoderAdapter(base_url="http://127.0.0.1:11434")
 
-    # 1. Explicit model takes precedence
+    # 1. Explicit model takes precedence when installed
     adapter.preferred_model = "custom-coder:32b"
-    assert adapter.resolve_model() == "custom-coder:32b"
+    with patch.object(adapter.client, "models", return_value=["custom-coder:32b"]):
+        assert adapter.resolve_model() == "custom-coder:32b"
     adapter.preferred_model = None
 
     # 2. Installed model matches preferred list
@@ -501,9 +503,156 @@ def test_qwen_adapter_model_resolution():
     with patch.object(adapter.client, "models", return_value=["my-qwen-coder-fine-tuned:latest"]):
         assert adapter.resolve_model() == "my-qwen-coder-fine-tuned:latest"
 
-    # 4. Fallback if empty
+    # 4. Fallback when validate=False
     with patch.object(adapter.client, "models", return_value=[]):
-        assert adapter.resolve_model() is not None
+        assert adapter.resolve_model(validate=False) is not None
+
+
+def test_qwen_adapter_model_unavailable():
+    """Verify OllamaError is raised when the requested/configured Qwen model is not installed."""
+    adapter = QwenCoderAdapter(base_url="http://127.0.0.1:11434")
+    adapter.preferred_model = "qwen2.5-coder:99b-nonexistent"
+
+    with patch.object(adapter.client, "models", return_value=["llama3:latest", "mistral:latest"]):
+        with pytest.raises(Exception) as exc_info:
+            adapter.resolve_model(validate=True)
+        assert "not installed" in str(exc_info.value)
+
+
+def test_handoff_preserves_dirty_working_tree(temp_env):
+    """Verify dirty working tree changes and git diff are recorded and preserved without destructive ops."""
+    import subprocess
+    manifest = TaskManifest(task_id="TASK-DIRTY", objective="Dirty working tree test")
+
+    # Mock read-only git queries
+    with patch("subprocess.run") as mock_run:
+        def side_effect(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            if "rev-parse" in cmd:
+                m.stdout = "main\n"
+            elif "status" in cmd:
+                m.stdout = " M app/main.py\n?? app/new_test.py\n"
+            elif "diff" in cmd and "--stat" in cmd:
+                m.stdout = " app/main.py | 5 +++++\n 1 file changed, 5 insertions(+)\n"
+            elif "diff" in cmd:
+                m.stdout = "--- a/app/main.py\n+++ b/app/main.py\n+new_feature()\n"
+            return m
+        mock_run.side_effect = side_effect
+
+        manifest.refresh_git_status()
+        assert len(manifest.files_changed) == 2
+        assert "M app/main.py" in manifest.files_changed
+        assert "?? app/new_test.py" in manifest.files_changed
+        assert "+new_feature()" in manifest.git_diff_patch
+        assert "1 file changed" in manifest.git_diff_stat
+
+        # Verify no destructive git command (reset, checkout, clean) was called
+        for call_args in mock_run.call_args_list:
+            cmd = call_args[0][0]
+            assert "reset" not in cmd
+            assert "checkout" not in cmd
+            assert "clean" not in cmd
+
+
+def test_interrupted_handoff_recovery(temp_env):
+    """An interrupted handoff leaves a stale lock that is safely recovered on next attempt."""
+    lock = WorktreeLock(temp_env["lock"])
+    mgr = ProviderStateManager(temp_env["state"], lock)
+    manifest = TaskManifest(
+        task_id="TASK-RECOVER",
+        objective="Recovery test",
+        manifest_path=str(temp_env["manifest"]),
+    )
+
+    dead_pid = 67890
+    lock_payload = {
+        "owner": "antigravity",
+        "task_id": "TASK-RECOVER",
+        "pid": dead_pid,
+        "hostname": "localhost",
+        "acquired_at": "2026-11-09T00:00:00+00:00",
+    }
+    with open(temp_env["lock"], "w", encoding="utf-8") as f:
+        json.dump(lock_payload, f)
+
+    with patch("bb.coder.provider._is_pid_alive", return_value=False):
+        assert lock.is_stale()
+        res = mgr.switch_to_fallback(manifest)
+        assert res["status"] == "switched"
+        assert res["active_provider"] == "qwen"
+        assert lock.get_info()["owner"] == "qwen"
+
+
+def test_manifest_branch_mismatch_detection(temp_env):
+    """Manifest detects when the repository is on a different branch than recorded."""
+    manifest = TaskManifest(task_id="TASK-BRANCH", objective="Branch check", branch="feature/auth-rework")
+
+    with patch.object(manifest, "check_branch_match", return_value=False):
+        errs = manifest.validate(check_branch=True)
+        assert any("Branch mismatch" in e for e in errs)
+
+    with patch.object(manifest, "check_branch_match", return_value=True):
+        errs = manifest.validate(check_branch=True)
+        assert not any("Branch mismatch" in e for e in errs)
+
+
+def test_manifest_task_resumption(temp_env):
+    """Resuming a task preserves existing criteria/issues and updates progress."""
+    path = temp_env["manifest"]
+    m = TaskManifest(
+        task_id="TASK-RESUME",
+        objective="Resume test",
+        acceptance_criteria=["Criterion A"],
+        known_issues=["Issue 1"],
+        unfinished_tasks=["Task 2"],
+    )
+    m.save(path)
+
+    loaded = TaskManifest.load(path)
+    loaded.resume_task(
+        next_action="Run test suite and verify diff",
+        new_criteria=["Criterion B"],
+    )
+
+    resumed = TaskManifest.load(path)
+    assert resumed.next_action == "Run test suite and verify diff"
+    assert "Criterion A" in resumed.acceptance_criteria
+    assert "Criterion B" in resumed.acceptance_criteria
+    assert "Issue 1" in resumed.known_issues
+    assert "Task 2" in resumed.unfinished_tasks
+
+
+def test_no_simultaneous_writers(temp_env):
+    """Verify strictly single-writer semantics under concurrent attempts."""
+    lock = WorktreeLock(temp_env["lock"])
+    successful_claims = []
+    barrier = threading.Barrier(3)
+
+    def worker(worker_id):
+        barrier.wait()
+        acquired = lock.acquire(owner=f"agent-{worker_id}", task_id=f"TASK-{worker_id}")
+        if acquired:
+            successful_claims.append(worker_id)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Exactly one agent must win the lock; no simultaneous writers permitted
+    assert len(successful_claims) == 1
+    assert lock.is_locked()
+    winning_agent = f"agent-{successful_claims[0]}"
+    assert lock.get_info()["owner"] == winning_agent
+    lock.assert_active_lock(winning_agent)
+
+    # Losing agents must be rejected by assert_active_lock
+    for i in range(3):
+        if i != successful_claims[0]:
+            with pytest.raises(LockConflictError):
+                lock.assert_active_lock(f"agent-{i}")
 
 
 def test_qwen_adapter_offline_error():

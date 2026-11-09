@@ -52,14 +52,43 @@ class QwenCoderAdapter:
         """Check if Ollama is running."""
         return self.client.available()
 
-    def resolve_model(self) -> str:
-        """Probe Ollama and return the best installed coder model tag."""
-        if self.preferred_model:
-            return self.preferred_model
+    def get_installed_models(self) -> list[str]:
+        """Return list of models installed in local Ollama runtime."""
+        return self.client.models()
 
-        installed = self.client.models()
+    def is_model_installed(self, tag: str) -> bool:
+        """Check if a specific model tag is installed in Ollama."""
+        installed = self.get_installed_models()
         if not installed:
-            return os.environ.get("BB_CODER_MODEL", MODEL)
+            return False
+        if tag in installed:
+            return True
+        for m in installed:
+            if m.startswith(tag + ":") or tag.startswith(m + ":"):
+                return True
+        return False
+
+    def resolve_model(self, validate: bool = True) -> str:
+        """Probe Ollama and validate the configured tag or pick the best installed coder model.
+
+        Raises:
+            OllamaError: If the configured model or any coder model is not installed.
+        """
+        configured = (self.preferred_model or os.environ.get("BB_CODER_MODEL", "")).strip()
+        installed = self.get_installed_models()
+
+        if configured:
+            if validate and installed and not self.is_model_installed(configured):
+                raise OllamaError(
+                    f"Configured Qwen coder model '{configured}' is not installed in local Ollama. "
+                    f"Installed models: {', '.join(installed)}."
+                )
+            return configured
+
+        if not installed:
+            if validate:
+                raise OllamaError("No models found in local Ollama runtime. Qwen Coder must be installed.")
+            return MODEL
 
         # 1. Exact match against preferred list
         for candidate in self.PREFERRED_TAGS:
@@ -77,8 +106,12 @@ class QwenCoderAdapter:
             if "coder" in model_name.lower():
                 return model_name
 
-        # 4. Fall back to first model or configured default
-        return installed[0] if installed else MODEL
+        if validate:
+            raise OllamaError(
+                f"No Qwen coder model found among installed Ollama models: {', '.join(installed)}. "
+                "Please install a Qwen Coder model (e.g. 'ollama pull qwen2.5-coder:7b')."
+            )
+        return installed[0]
 
     def _chat(
         self,
@@ -100,13 +133,14 @@ class QwenCoderAdapter:
                 "Local coder is busy: could not acquire generation lock within timeout."
             )
         try:
-            # We call client.chat with the resolved model
+            # We call client.chat with the resolved model and configured residency
             return self.client.chat(
                 messages,
                 model=model,
                 temperature=temperature,
                 timeout=self.timeout,
                 num_ctx=num_ctx,
+                keep_alive=self.keep_alive,
             )
         finally:
             _CODER_SEMAPHORE.release()

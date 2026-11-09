@@ -1145,6 +1145,88 @@ def cmd_analyze(args) -> int:
     return 0
 
 
+def cmd_authz(args) -> int:
+    from bb.authz import AuthzInvestigationWorkflow
+    from bb.http import RequestBudget
+
+    action = getattr(args, "authz_action", None)
+    if not action:
+        print("usage: bb authz {plan,run,status} ...")
+        return 1
+
+    if action == "status":
+        from bb.authz.workflow import AUTHZ_CHECKPOINTS_DIR
+        AUTHZ_CHECKPOINTS_DIR.mkdir(parents=True, exist_ok=True)
+        checkpoints = list(AUTHZ_CHECKPOINTS_DIR.glob("*.json"))
+        if not checkpoints:
+            print("No authorization investigations found.")
+            return 0
+        print(f"=== AUTHORIZATION INVESTIGATIONS ({len(checkpoints)}) ===")
+        for cp in checkpoints:
+            try:
+                data = json.loads(cp.read_text(encoding="utf-8"))
+                print(f"[{data.get('status', 'unknown').upper():9}] {data.get('investigation_id')} | "
+                      f"Program: {data.get('program')} | Hypotheses: {data.get('hypotheses_count')} | "
+                      f"Verified: {len(data.get('verified_findings', []))} | "
+                      f"Updated: {data.get('updated_at')}")
+            except Exception:
+                print(f"[CORRUPT] {cp.name}")
+        return 0
+
+    _require_not_stopped()
+    scope = _scope_or_die(args.program)
+    accounts = load_accounts(getattr(args, "accounts", None), args.program)
+    store = Store()
+    budget = RequestBudget(rate=args.rate, max_requests=args.max_requests)
+
+    wf = AuthzInvestigationWorkflow(
+        program=args.program,
+        scope=scope,
+        accounts=accounts,
+        store=store,
+        har_path=args.har,
+        budget=budget,
+        investigation_id=getattr(args, "id", None),
+    )
+
+    if action == "plan":
+        plan = wf.build_plan()
+        print(f"\n=== AUTHORIZATION INVESTIGATION PLAN: {plan['investigation_id']} ===")
+        print(f"Program:            {plan['program']}")
+        print(f"Endpoints observed: {plan['endpoints_observed']}")
+        print(f"Parameters:         {plan['parameters_observed']}")
+        print(f"Objects:            {plan['objects_observed']}")
+        print(f"Safe Read Tests:    {plan['safe_read_count']}")
+        print(f"Write Tests:        {plan['state_changing_count']} (Require human approval)")
+        print(f"\nHypotheses ({len(plan['hypotheses'])}):")
+        for h in plan["hypotheses"]:
+            state_flag = "[WRITE-APPROVAL-REQ]" if h["is_state_changing"] else "[SAFE-READ]"
+            print(f"  * {h['id']} {state_flag:20} {h['target_method']:6} {h['target_endpoint']}")
+            print(f"    {h['title']}")
+        print("\nTo execute this plan, run:")
+        print(f"  bb authz run --program {args.program} --har \"{args.har}\"")
+        return 0
+
+    if action == "run":
+        approved_ops = getattr(args, "approve_ops", None) or []
+        res = wf.run_investigation(
+            allow_write=getattr(args, "allow_write", False),
+            approved_operations=approved_ops,
+        )
+        print(f"\n=== INVESTIGATION RUN FINISHED: {res['investigation_id']} ===")
+        print(f"Status:             {res['status']}")
+        print(f"Total Hypotheses:   {res['total_hypotheses']}")
+        print(f"Verified Findings:  {res['verified']}")
+        print(f"Rejected Findings:  {res['rejected']}")
+        print(f"Inconclusive:       {res['inconclusive']}")
+        if res["verified"] > 0:
+            print("\nVerified findings placed into human approval queue:")
+            print("  Run 'bb queue' to review and 'bb decide <id> --approve' to accept.")
+        return 0
+
+    return 1
+
+
 
 # ============================================================
 # parser
@@ -1512,6 +1594,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     hp = hsub.add_parser("plan", help="format task brief for local Qwen Coder from manifest")
     hp.set_defaults(func=cmd_handoff)
+
+    # Autonomous authorization investigation (Task P4)
+    az = sub.add_parser("authz", help="autonomous two-account authorization investigation (Task P4)")
+    az_sub = az.add_subparsers(dest="authz_action")
+
+    az_plan = az_sub.add_parser("plan", help="build authorization investigation plan without executing requests")
+    az_plan.add_argument("--program", required=True, help="target program name")
+    az_plan.add_argument("--har", required=True, help="path to authenticated traffic HAR capture")
+    az_plan.add_argument("--accounts", help="accounts JSON file (defaults to data/accounts/<program>.json)")
+    az_plan.add_argument("--rate", type=float, default=3.0, help="request rate limit (req/sec)")
+    az_plan.add_argument("--max-requests", type=int, default=100, help="max requests budget limit")
+    az_plan.add_argument("--id", help="custom investigation ID")
+    az_plan.set_defaults(func=cmd_authz)
+
+    az_run = az_sub.add_parser("run", help="execute authorization investigation under scoped policy controls")
+    az_run.add_argument("--program", required=True, help="target program name")
+    az_run.add_argument("--har", required=True, help="path to authenticated traffic HAR capture")
+    az_run.add_argument("--accounts", help="accounts JSON file (defaults to data/accounts/<program>.json)")
+    az_run.add_argument("--allow-write", action="store_true", help="permit state-changing write operations")
+    az_run.add_argument("--approve-ops", action="append", help="approve specific state-changing operation token (repeatable)")
+    az_run.add_argument("--rate", type=float, default=3.0, help="request rate limit (req/sec)")
+    az_run.add_argument("--max-requests", type=int, default=100, help="max requests budget limit")
+    az_run.add_argument("--id", help="custom investigation ID to resume or execute")
+    az_run.set_defaults(func=cmd_authz)
+
+    az_status = az_sub.add_parser("status", help="show authorization investigation status and checkpoints")
+    az_status.set_defaults(func=cmd_authz)
 
     return p
 

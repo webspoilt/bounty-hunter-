@@ -33,16 +33,19 @@ from typing import Any, Callable
 from bb import analyze, cve, feedback, learn, normalize, waf
 from bb.checks import CheckOptions, Checker, dedupe_findings
 from bb.config import DEFAULT_MAX_REQUESTS, DEFAULT_RATE, DEFAULT_TIMEOUT, now_iso
+from bb.decision.evaluator import DecisionEvaluator
 from bb.decision.gateway import DecisionGateway
 from bb.gate import ApprovalGate
 from bb.http import BudgetExceeded, RequestBudget, ScopedClient
 from bb.killswitch import AbortRequested, active as kill_active
 from bb.models import Finding
+from bb.orchestrator.adaptive import SwarmMetrics
 from bb.orchestrator.agent_registry import AgentRegistry, AgentSpec
 from bb.orchestrator.lifecycle import LifecycleManager, State
 from bb.orchestrator.planner import Planner
 from bb.orchestrator.resource_manager import ResourceManager, SecurityPolicy
 from bb.orchestrator.scheduler import Scheduler
+from bb.orchestrator.swarm_runner import ControllerSwarmRunner
 from bb.recon import Recon
 from bb.scope import Scope
 from bb.session import Role, login_roles
@@ -73,6 +76,7 @@ class ControllerConfig:
     ai_analysis: bool = True
     queue: bool = True
     tev1: bool = True
+    adaptive_swarm: bool = True
     max_iterations: int = 200
     lease_seconds: float = 300.0
     check_options: CheckOptions = field(default_factory=CheckOptions)
@@ -121,17 +125,32 @@ class Controller:
             store=self.store,
             run_id=self.run_id,
         )
-        self.agent_registry = AgentRegistry()
-        self.scheduler = Scheduler(self.store, self.run_id, lease_seconds=self.cfg.lease_seconds)
-        self.planner = Planner(self.cfg.scope, self.store, self.cfg.program)
-        self.decision_gateway = DecisionGateway()
-
         self.roles: list[Role] = []
         self._endpoints: list[dict] = []
         self._findings: list[Finding] = []
         self._paused: bool = False
         self._aborted: bool = False
         self._iterations: int = 0
+        self._metrics = SwarmMetrics()
+
+        self.agent_registry = AgentRegistry()
+        self.scheduler = Scheduler(self.store, self.run_id, lease_seconds=self.cfg.lease_seconds)
+        self.planner = Planner(self.cfg.scope, self.store, self.cfg.program)
+        self.decision_gateway = DecisionGateway()
+        self.decision_evaluator = DecisionEvaluator()
+        self.swarm_runner = ControllerSwarmRunner(
+            scope=self.cfg.scope,
+            store=self.store,
+            run_id=self.run_id,
+            resource_mgr=self.resource_mgr,
+            scheduler=self.scheduler,
+            roles=self.roles,
+            options=self.cfg.check_options,
+            proxy=self.cfg.proxy,
+            timeout=self.cfg.timeout,
+            dry_run=self.cfg.dry_run,
+            log=self.log,
+        )
 
     # ---------- lifecycle control ----------
 
@@ -276,14 +295,28 @@ class Controller:
                 self.lifecycle.transition_to(State.COMPLETED, reason="work_complete")
                 return {"status": "completed", "reason": "work_complete"}
 
-            # Step 5: Create compact decision state
+            # Step 5: Create compact decision state & evaluate scaling
             context = self.planner.build_decision_context(eligible)
+            self._metrics.eligible_tasks = len(eligible)
+
+            # Adaptive scaling evaluation
+            tev1_worker_rec = None
+            if self.cfg.tev1 and len(eligible) >= 5:
+                # Optionally ask Tev1 for scale recommendation if many tasks exist
+                pass
+
+            allowed_workers, scale_reason = self.resource_mgr.evaluate_scaling(
+                self._metrics, tev1_recommendation=tev1_worker_rec
+            )
 
             # Step 6: Ask local Tev1 to rank or select from supplied eligible candidates
-            selected_task = eligible[0]  # deterministic default
+            selected_task = eligible[0]  # deterministic baseline default
+            decision_id = f"dec-{self.run_id}-{self._iterations}"
+            tev1_dec = {"choice": selected_task.fingerprint, "source": "deterministic-baseline"}
+
             if self.cfg.tev1:
-                dec = self.decision_gateway.select_task(eligible, context)
-                choice = dec.get("choice")
+                tev1_dec = self.decision_gateway.select_task(eligible, context)
+                choice = tev1_dec.get("choice")
                 if choice == "defer":
                     self.log("[*] Tev1 recommended deferral. Yielding step.")
                     return {"status": "deferred", "reason": "tev1_defer"}
@@ -292,6 +325,17 @@ class Controller:
                         if t.fingerprint == choice:
                             selected_task = t
                             break
+
+            # Record decision evaluation record
+            self.decision_evaluator.record_decision(
+                decision_id=decision_id,
+                run_id=self.run_id,
+                decision_point="task-selection",
+                options=[t.fingerprint for t in eligible[:10]],
+                tev1_result=tev1_dec,
+                baseline_choice=eligible[0].fingerprint,
+                task_fingerprint=selected_task.fingerprint,
+            )
 
             # Step 7: Validate the selected ID
             valid_ids = {t.fingerprint for t in eligible}
@@ -401,9 +445,21 @@ class Controller:
                     selected_task.fingerprint, state="done",
                     result={"findings": [f.id for f in discovered_findings], "requests": client.sent}
                 )
+                self.decision_evaluator.attach_execution_result(
+                    decision_id=decision_id,
+                    status="done",
+                    findings_count=len(discovered_findings),
+                    requests_cost=client.sent,
+                )
                 self.log(f"  [controller] {selected_task.kind:12} {selected_task.target[:60]} -> {len(discovered_findings)} finding(s)")
             except Exception as exc:
                 self.scheduler.finish_task(selected_task.fingerprint, state="failed", result={"error": str(exc)})
+                self.decision_evaluator.attach_execution_result(
+                    decision_id=decision_id,
+                    status="failed",
+                    findings_count=0,
+                    requests_cost=client.sent if 'client' in locals() else 0,
+                )
                 self.log(f"  [controller] {selected_task.kind:12} {selected_task.target[:60]} FAILED: {exc}")
             finally:
                 client.close()
@@ -412,13 +468,23 @@ class Controller:
             self.lifecycle.transition_to(State.VERIFYING, reason="verifying findings")
             deduped = dedupe_findings(self._findings)
             v_client = self._make_client("controller_verify")
+            verif_summary = {"confirmed": 0, "rejected": 0, "kept": 0}
             try:
-                verify_candidates(
+                verif_summary = verify_candidates(
                     self.store, self.cfg.scope, self.cfg.program,
                     accounts=self.cfg.accounts, client=v_client, log=lambda *a, **k: None
                 )
             finally:
                 v_client.close()
+
+            # Attach verification status to decision evaluation
+            verif_stat = "confirmed" if verif_summary.get("confirmed", 0) > 0 else (
+                "rejected" if verif_summary.get("rejected", 0) > 0 else "inconclusive"
+            )
+            self.decision_evaluator.attach_verification_result(
+                decision_id=decision_id,
+                verification_status=verif_stat,
+            )
 
             # Step 17: Update outcome and learning data
             self.lifecycle.transition_to(State.LEARNING, reason="updating priors and triage")
@@ -466,6 +532,7 @@ class Controller:
             if not res or res.get("status") in ("completed", "aborted", "paused"):
                 break
 
+        self.decision_evaluator.flush()
         self.store.finish_run(self.run_id)
         findings = self.store.findings(run_id=self.run_id)
         verified = [f for f in findings if f.status == "confirmed"]
@@ -477,4 +544,5 @@ class Controller:
             "findings": len(findings),
             "verified": len(verified),
             "budget_used": self.resource_mgr.budget.used,
+            "decision_evaluation": self.decision_evaluator.generate_report(run_id=self.run_id),
         }

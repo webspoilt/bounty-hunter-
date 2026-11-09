@@ -7,17 +7,22 @@ The Resource Manager and Security Policy exclusively own:
   - Kill-switch monitoring and immediate abort enforcement.
   - State-changing write authorization and human approval gates.
   - Verification backlog management.
+  - Concurrency dimensions and adaptive scaling limits.
+  - Local model concurrency bounds (Tev1 vs Qwen Coder).
 
 Tev1 cannot modify or bypass any rule defined here.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from bb.config import DEFAULT_MAX_REQUESTS, DEFAULT_RATE
 from bb.http import BudgetExceeded, RequestBudget
 from bb.killswitch import AbortRequested, active as kill_active, reason as kill_reason
+from bb.orchestrator.adaptive import AdaptiveScalingPolicy, SwarmMetrics
 from bb.scope import Scope, ScopeDecision
 
 if TYPE_CHECKING:
@@ -35,10 +40,72 @@ class SecurityPolicy:
     rate: float = DEFAULT_RATE
     max_requests: int = DEFAULT_MAX_REQUESTS
     deadline: float | None = None
+    min_rate: float = 0.1
+    # Concurrency boundaries
+    initial_workers: int = 5
+    max_workers: int = 50
+    min_workers: int = 1
+    tev1_max_concurrency: int = 2
+    qwen_max_concurrency: int = 1
 
 
 class PolicyViolation(RuntimeError):
     """Raised when an operation violates security policy or boundaries."""
+
+
+class ConcurrencyTracker:
+    """Independently tracks the 4 distinct concurrency dimensions:
+
+    1. Logical worker count (swarm execution units)
+    2. Tev1 decision concurrency (lightweight structured JSON)
+    3. Qwen generation concurrency (heavy local model code gen)
+    4. HTTP request concurrency (active in-flight network requests)
+    """
+
+    def __init__(self, policy: SecurityPolicy):
+        self.policy = policy
+        self._lock = threading.Lock()
+        self.logical_workers: int = policy.initial_workers
+        self.active_logical_workers: int = 0
+        self.active_http_requests: int = 0
+        self.tev1_semaphore = threading.BoundedSemaphore(value=policy.tev1_max_concurrency)
+        self.qwen_semaphore = threading.BoundedSemaphore(value=policy.qwen_max_concurrency)
+        self._active_tev1: int = 0
+        self._active_qwen: int = 0
+
+    def acquire_tev1(self, timeout: float = 30.0) -> bool:
+        acquired = self.tev1_semaphore.acquire(timeout=timeout)
+        if acquired:
+            with self._lock:
+                self._active_tev1 += 1
+        return acquired
+
+    def release_tev1(self) -> None:
+        with self._lock:
+            self._active_tev1 = max(0, self._active_tev1 - 1)
+        self.tev1_semaphore.release()
+
+    def acquire_qwen(self, timeout: float = 60.0) -> bool:
+        acquired = self.qwen_semaphore.acquire(timeout=timeout)
+        if acquired:
+            with self._lock:
+                self._active_qwen += 1
+        return acquired
+
+    def release_qwen(self) -> None:
+        with self._lock:
+            self._active_qwen = max(0, self._active_qwen - 1)
+        self.qwen_semaphore.release()
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "logical_workers": self.logical_workers,
+                "active_logical_workers": self.active_logical_workers,
+                "active_http_requests": self.active_http_requests,
+                "active_tev1": self._active_tev1,
+                "active_qwen": self._active_qwen,
+            }
 
 
 class ResourceManager:
@@ -56,6 +123,13 @@ class ResourceManager:
         )
         self.store = store
         self.run_id = run_id
+        self.concurrency = ConcurrencyTracker(self.policy)
+        self.adaptive_policy = AdaptiveScalingPolicy(
+            initial_workers=self.policy.initial_workers,
+            min_workers=self.policy.min_workers,
+            max_workers=self.policy.max_workers,
+            max_verification_backlog=self.policy.max_verification_backlog,
+        )
 
     # ---------- kill switch & budget checks ----------
 
@@ -70,13 +144,20 @@ class ResourceManager:
     def check_budget_available(self) -> bool:
         """Check whether requests remain under the shared budget."""
         if self.policy.deadline is not None:
-            import time
             if time.monotonic() > self.policy.deadline:
                 return False
         if self.policy.max_requests is not None:
             if self.budget.used >= self.policy.max_requests:
                 return False
         return True
+
+    def budget_remaining_ratio(self) -> float:
+        """Ratio of remaining requests against maximum allowed."""
+        if self.policy.max_requests is None or self.policy.max_requests <= 0:
+            return 1.0
+        used = self.budget.used
+        remaining = max(0, self.policy.max_requests - used)
+        return remaining / float(self.policy.max_requests)
 
     # ---------- scope & DNS validation ----------
 
@@ -153,3 +234,30 @@ class ResourceManager:
         count = len(candidates)
         backlogged = count >= self.policy.max_verification_backlog
         return backlogged, count
+
+    # ---------- adaptive scaling computation ----------
+
+    def effective_network_concurrency(self, logical_workers: int) -> int:
+        """Calculate network worker cap governed by the polite rate budget."""
+        rate = max(self.policy.rate, self.policy.min_rate)
+        # Network concurrency is bounded by rate / MIN_RATE (e.g. 3.0 / 0.1 = 30)
+        return max(1, min(int(logical_workers), int(rate / self.policy.min_rate)))
+
+    def evaluate_scaling(
+        self,
+        metrics: SwarmMetrics,
+        tev1_recommendation: int | None = None,
+    ) -> tuple[int, str]:
+        """Calculate allowed logical worker count deterministically."""
+        self.check_killswitch()
+        # Backlog update
+        backlogged, backlog_count = self.check_verification_backlog()
+        metrics.verification_backlog = backlog_count
+        metrics.budget_remaining_ratio = self.budget_remaining_ratio()
+        metrics.killswitch_active = kill_active()
+
+        allowed_workers, explanation = self.adaptive_policy.evaluate_scale(
+            metrics, tev1_recommendation=tev1_recommendation
+        )
+        self.concurrency.logical_workers = allowed_workers
+        return allowed_workers, explanation

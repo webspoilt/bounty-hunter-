@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 <img src="assets/banner.svg" alt="bountybot â€” scope-gated bug-bounty pipeline" width="880">
 
@@ -382,7 +382,7 @@ skips the consultation entirely.
 
 ### 5.10 Persistent research controller (orchestration engine)
 
-The persistent research controller (b/orchestrator/controller.py) manages autonomous
+The persistent research controller (bb/orchestrator/controller.py) manages autonomous
 investigation loops through an explicit, validated, and persisted 11-state machine:
 
 DISCOVERING -> MAPPING -> ANALYZING -> PLANNING -> POLICY_REVIEW -> EXECUTING -> VERIFYING -> LEARNING -> COMPLETED / PAUSED / ABORTED
@@ -399,10 +399,29 @@ DISCOVERING -> MAPPING -> ANALYZING -> PLANNING -> POLICY_REVIEW -> EXECUTING ->
    override the kill switch, increase request budgets, create arbitrary executable tasks,
    register arbitrary agents, approve state-changing tests, or submit reports.
 3. **Lease-Based Crash Recovery**: Tasks are claimed atomically in the existing SQLite
-   ledger (	asks table) with lease durations (lease_seconds, default 300s). If a process
+   ledger (tasks table) with lease durations (lease_seconds, default 300s). If a process
    crashes or the machine restarts, orphaned running tasks are recovered automatically.
-4. **Clean Operator Controls**: Pause and resume at any point via CLI (b controller pause /
-   b controller resume), preserving full state in SQLite runs.
+4. **Clean Operator Controls**: Pause and resume at any point via CLI (bb controller pause /
+   bb controller resume), preserving full state in SQLite runs.
+
+### 5.11 Coding agent handoff to local Ollama Qwen Coder 8B
+
+When primary cloud agent tokens (Codex or Google Antigravity) are depleted, Bounty Hunter V2
+provides a reliable, platform-safe handoff to local Ollama running Qwen Coder 8B (`bb/coder/`):
+
+1. **Model Hierarchy**: Primary (Codex / Antigravity) -> Fallback (Qwen Coder 8B) -> Decision support
+   (Tev1 0.8B on `/v1/systemone`). Strict interface separation: Tev1 chooses among structured options;
+   Qwen Coder generates targeted unified diffs. No hallucinated cloud quota APIs.
+2. **Persistent Task Manifest**: Preserves task ID, objective, provider, git status, diff stats,
+   acceptance criteria, tests run, test results, and next actions (`data/task_manifest.json`).
+   Detects branch mismatches automatically when resuming across branches.
+3. **Single-Writer Worktree Lock**: Enforces that only one agent can modify the working tree at a
+   time (`data/worktree.lock`). Safe Win32 process inspection via `OpenProcess` and `GetExitCodeProcess`
+   (never destructive `os.kill(pid, 0)` on Windows); thread-safe mutex and stale-lock recovery.
+4. **Local Qwen Coder Adapter**: Validates model tag installation before execution, prevents VRAM
+   starvation via bounded concurrency semaphore (`_CODER_SEMAPHORE`), supports configurable
+   model residency (`keep_alive`), and enforces inspection-first workflow before diff generation.
+5. **Operator Runbook**: See `docs/CODING_AGENT_HANDOFF.md` for the full 11-step handoff protocol.
 
 ## 6 Â· Evaluation
 
@@ -537,7 +556,9 @@ bb scope import --program acme --from file --file data/scopes/acme.json
 | `bb duplicate pull\|ingest\|stats\|search\|check` | disclosed-report duplicate prior and checklist (`pip install -e .[h1]`) |
 | `bb auto ... --no-tev1` / `--no-ai` | autonomous loop; Tev1 structured triage decisions and LLM analysis are independently skippable |
 
-| b controller status\|pause\|resume\|abort\|run | persistent research controller & state machine |
+| `bb controller status\|pause\|resume\|abort\|run` | persistent research controller & state machine |
+| `bb handoff status\|create\|switch\|update\|plan\|lock` | coding agent handoff and single-writer worktree lock |
+| `bb authz plan\|run\|status` | autonomous two-account authorization investigation (Task P4) |
 
 ### 7.4 Accounts file
 
