@@ -1,4 +1,4 @@
-"""Built-in Web Dashboard & API server for bountybot.
+"""Built-in Web Dashboard & Researcher Workspace server for bountybot.
 
 Zero external dependencies: uses Python standard library `http.server`.
 Provides:
@@ -8,6 +8,13 @@ Provides:
   - Assets, Endpoints, and Routes inspector
   - Interactive Finding Detail modal with full HTTP request/response evidence
   - Kill Switch trigger and status indicator
+  - P7 Researcher Workspace:
+      * Discovered endpoints and applications inspection with filtering
+      * HTTP exchanges inspection with status and method filtering
+      * Clear classification tiers (Observation, Hypothesis, Candidate, Inconclusive, Verified Finding)
+      * Dual-role account context comparison
+      * One-click manual review marking and report draft generation
+      * Export to Burp Suite XML
 """
 from __future__ import annotations
 
@@ -19,6 +26,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from bb import __version__, feedback, killswitch, learn, metrics
+from bb.burp_api import BurpApiClient
+from bb.burp_export import export_exchanges_to_burp_xml, export_finding_to_burp
 from bb.gate import ApprovalGate
 from bb.models import sev_rank
 from bb.store import Store
@@ -28,7 +37,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BountyBot Live Dashboard</title>
+  <title>BountyBot Live Dashboard & Researcher Workspace</title>
   <style>
     :root {
       --bg: #0d1117;
@@ -41,17 +50,21 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       --red: #f85149;
       --orange: #d29922;
       --purple: #bc8cff;
+      --cyan: #39c5bb;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; }
     body { background: var(--bg); color: var(--text); padding: 24px; }
     header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px; }
     h1 { color: var(--heading); font-size: 22px; display: flex; align-items: center; gap: 10px; }
     .badge { font-size: 11px; padding: 3px 8px; border-radius: 12px; background: #21262d; border: 1px solid var(--border); }
+    .badge-verified { background: rgba(46, 160, 67, 0.2); color: #3fb950; border-color: #238636; }
+    .badge-candidate { background: rgba(210, 153, 34, 0.2); color: #d29922; border-color: #9e6a03; }
+    .badge-inconclusive { background: rgba(139, 148, 158, 0.2); color: #8b949e; border-color: #484f58; }
     .status-pill { padding: 4px 10px; border-radius: 14px; font-size: 12px; font-weight: bold; }
     .status-ok { background: rgba(46, 160, 67, 0.2); color: #3fb950; border: 1px solid #238636; }
     .status-stopped { background: rgba(248, 81, 73, 0.2); color: #f85149; border: 1px solid #da3633; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
     .card-title { font-size: 12px; text-transform: uppercase; color: #8b949e; letter-spacing: 0.5px; margin-bottom: 8px; }
     .card-value { font-size: 26px; font-weight: bold; color: var(--heading); }
     .card-sub { font-size: 12px; color: #8b949e; margin-top: 4px; }
@@ -73,17 +86,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     .btn-reject:hover { background: #30363d; }
     .btn-danger { background: #da3633; color: #fff; }
     .btn-danger:hover { background: #f85149; }
+    .btn-burp { background: #f0883e; color: #fff; }
+    .btn-burp:hover { background: #d26a1b; }
     .raw-evidence { background: #090d13; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 12px; overflow-x: auto; max-height: 250px; white-space: pre-wrap; margin-top: 6px; }
     .actions { display: flex; gap: 6px; }
+    .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+    .input-filter { background: #090d13; border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 13px; }
+    .dual-box { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+    .role-box { background: #090d13; border: 1px solid var(--border); padding: 12px; border-radius: 6px; font-size: 12px; }
   </style>
 </head>
 <body>
   <header>
     <div>
-      <h1>BountyBot Dashboard <span class="badge">v__VERSION__</span></h1>
-      <p style="color: #8b949e; font-size: 13px; margin-top: 4px;">Stateful bug bounty engine with verification & learning loop</p>
+      <h1>BountyBot Dashboard & Workspace <span class="badge">v__VERSION__</span></h1>
+      <p style="color: #8b949e; font-size: 13px; margin-top: 4px;">Researcher workspace with Burp Suite interoperability & verified triage</p>
     </div>
     <div style="display: flex; gap: 12px; align-items: center;">
+      <span id="burp-status" class="badge">Burp Proxy: Checking...</span>
       <span id="kill-status" class="status-pill status-ok">OPERATIONAL</span>
       <button id="kill-btn" class="btn btn-danger" onclick="toggleKillSwitch()">ARM KILL SWITCH</button>
     </div>
@@ -113,13 +133,47 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   </div>
 
   <div class="tabs">
-    <div class="tab active" onclick="showTab('queue')">Approval Queue</div>
+    <div class="tab active" onclick="showTab('workspace')">Researcher Workspace</div>
+    <div class="tab" onclick="showTab('exchanges')">HTTP Traffic (Exchanges)</div>
+    <div class="tab" onclick="showTab('queue')">Approval Queue</div>
     <div class="tab" onclick="showTab('findings')">All Findings</div>
     <div class="tab" onclick="showTab('routes')">Routes & Inventory</div>
     <div class="tab" onclick="showTab('learning')">Learning Priors</div>
   </div>
 
-  <div id="tab-queue" class="tab-pane">
+  <!-- Tab 1: Researcher Workspace -->
+  <div id="tab-workspace" class="tab-pane">
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h3 style="font-size: 16px; color: var(--heading);">Candidate Vulnerabilities & Verification Inspector</h3>
+        <div class="actions">
+          <button class="btn btn-burp" onclick="exportBurpXmlAll()">Export Candidates to Burp XML</button>
+          <button class="btn btn-reject" onclick="loadWorkspace()">Refresh</button>
+        </div>
+      </div>
+      <p style="color: #8b949e; font-size: 13px; margin-bottom: 14px;">
+        Strict evidence separation: Candidates remain unconfirmed until independently verified.
+      </p>
+      <div id="workspace-container">Loading workspace...</div>
+    </div>
+  </div>
+
+  <!-- Tab 2: HTTP Traffic Exchanges -->
+  <div id="tab-exchanges" class="tab-pane" style="display: none;">
+    <div class="card">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h3 style="font-size: 16px; color: var(--heading);">Captured HTTP Traffic (Scoped Exchanges)</h3>
+        <div class="filter-bar">
+          <input type="text" id="filter-exchange-host" class="input-filter" placeholder="Filter host..." oninput="loadExchanges()">
+          <input type="text" id="filter-exchange-method" class="input-filter" placeholder="Method (GET/POST)..." oninput="loadExchanges()" style="width: 140px;">
+        </div>
+      </div>
+      <div id="exchanges-container">Loading exchanges...</div>
+    </div>
+  </div>
+
+  <!-- Tab 3: Queue -->
+  <div id="tab-queue" class="tab-pane" style="display: none;">
     <div class="card">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
         <h3 style="font-size: 16px; color: var(--heading);">Pending Findings Queue</h3>
@@ -129,6 +183,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Tab 4: Findings -->
   <div id="tab-findings" class="tab-pane" style="display: none;">
     <div class="card">
       <h3 style="font-size: 16px; color: var(--heading); margin-bottom: 12px;">All Recorded Findings</h3>
@@ -136,6 +191,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Tab 5: Routes -->
   <div id="tab-routes" class="tab-pane" style="display: none;">
     <div class="card">
       <h3 style="font-size: 16px; color: var(--heading); margin-bottom: 12px;">Normalized Route Templates</h3>
@@ -143,6 +199,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Tab 6: Learning -->
   <div id="tab-learning" class="tab-pane" style="display: none;">
     <div class="card">
       <h3 style="font-size: 16px; color: var(--heading); margin-bottom: 12px;">Feedback & Class Priors</h3>
@@ -177,6 +234,17 @@ DASHBOARD_HTML = """<!DOCTYPE html>
           kb.className = 'btn btn-danger';
         }
 
+        const burpStatus = document.getElementById('burp-status');
+        if (stats.burp_api && stats.burp_api.available) {
+          burpStatus.innerText = 'Burp Pro/Ent API Active';
+          burpStatus.className = 'badge badge-verified';
+        } else {
+          burpStatus.innerText = 'Burp: Standalone Proxy';
+          burpStatus.className = 'badge';
+        }
+
+        loadWorkspace();
+        loadExchanges();
         loadQueue();
         loadFindings();
         loadRoutes();
@@ -184,6 +252,102 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       } catch (err) {
         console.error(err);
       }
+    }
+
+    async function loadWorkspace() {
+      const res = await fetch('/api/workspace/candidates');
+      const items = await res.json();
+      const c = document.getElementById('workspace-container');
+      if (!items || items.length === 0) {
+        c.innerHTML = '<p style="color: #8b949e; padding: 12px;">No candidate vulnerabilities or investigations recorded yet.</p>';
+        return;
+      }
+      let html = '';
+      for (const item of items) {
+        const sevClass = 'sev-' + (item.severity || 'low').toLowerCase();
+        let statusBadge = 'badge-candidate';
+        if (item.status === 'confirmed') statusBadge = 'badge-verified';
+        else if (item.status === 'inconclusive') statusBadge = 'badge-inconclusive';
+
+        html += `<div class="card" style="border-left: 4px solid var(--accent); margin-bottom: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <span class="${sevClass}" style="font-size: 14px;">[${(item.severity || 'UNKNOWN').toUpperCase()}]</span>
+              <b style="color: var(--heading); margin-left: 6px;">${escapeHtml(item.title)}</b>
+              <span class="badge ${statusBadge}" style="margin-left: 8px;">Tier: ${item.tier || item.status}</span>
+            </div>
+            <div class="actions">
+              <button class="btn btn-burp" onclick="exportFindingBurp('${item.id}')">Export to Burp</button>
+              <button class="btn btn-approve" onclick="markManualReview('${item.id}')">Mark Reviewed</button>
+            </div>
+          </div>
+          <div style="margin-top: 8px; font-size: 13px; color: #8b949e;">
+            Target URL: <code>${escapeHtml(item.url || '-')}</code> | Bug Class: <b>${escapeHtml(item.bug_class || '-')}</b>
+          </div>
+          ${item.dual_role ? `
+            <div class="dual-box">
+              <div class="role-box">
+                <b style="color: var(--accent);">Account A (Owner / Baseline)</b>
+                <div style="margin-top: 4px;">Status: ${item.dual_role.a_status || 200} | Identity: ${escapeHtml(item.dual_role.identity_a || 'Role A')}</div>
+                <div class="raw-evidence">${escapeHtml(item.dual_role.a_excerpt || '(no excerpt)')}</div>
+              </div>
+              <div class="role-box">
+                <b style="color: var(--orange);">Account B (Cross-Role Attacker)</b>
+                <div style="margin-top: 4px;">Status: ${item.dual_role.b_status || 403} | Identity: ${escapeHtml(item.dual_role.identity_b || 'Role B')}</div>
+                <div class="raw-evidence">${escapeHtml(item.dual_role.b_excerpt || '(no excerpt)')}</div>
+              </div>
+            </div>
+          ` : ''}
+          ${item.verification_note ? `<div style="margin-top: 8px; font-size: 12px; color: var(--cyan);"><b>Verification Status:</b> ${escapeHtml(item.verification_note)}</div>` : ''}
+        </div>`;
+      }
+      c.innerHTML = html;
+    }
+
+    async function loadExchanges() {
+      const host = document.getElementById('filter-exchange-host').value;
+      const method = document.getElementById('filter-exchange-method').value;
+      const res = await fetch(`/api/workspace/exchanges?host=${encodeURIComponent(host)}&method=${encodeURIComponent(method)}`);
+      const items = await res.json();
+      const c = document.getElementById('exchanges-container');
+      if (!items || items.length === 0) {
+        c.innerHTML = '<p style="color: #8b949e; padding: 12px;">No matching HTTP exchanges found.</p>';
+        return;
+      }
+      let html = '<table><thead><tr><th>ID</th><th>Method</th><th>Status</th><th>URL</th><th>Duration</th><th>Action</th></tr></thead><tbody>';
+      for (const ex of items) {
+        html += `<tr>
+          <td><code>${ex.id}</code></td>
+          <td><span class="badge">${ex.method}</span></td>
+          <td><code>${ex.status}</code></td>
+          <td><code>${escapeHtml(ex.url)}</code></td>
+          <td>${ex.duration_ms || 0} ms</td>
+          <td><button class="btn btn-burp" onclick="exportSingleExchangeBurp(${ex.id})">Export XML</button></td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      c.innerHTML = html;
+    }
+
+    async function exportFindingBurp(id) {
+      window.open(`/api/workspace/export_burp?finding_id=${encodeURIComponent(id)}`, '_blank');
+    }
+
+    async function exportSingleExchangeBurp(id) {
+      window.open(`/api/workspace/export_burp?exchange_id=${encodeURIComponent(id)}`, '_blank');
+    }
+
+    async function exportBurpXmlAll() {
+      window.open('/api/workspace/export_burp', '_blank');
+    }
+
+    async function markManualReview(id) {
+      await fetch('/api/workspace/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, review_status: 'reviewed' })
+      });
+      loadWorkspace();
     }
 
     async function loadQueue() {
@@ -325,9 +489,9 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 class DashboardHandler(BaseHTTPRequestHandler):
     store = Store()
     gate = ApprovalGate(store)
+    burp_client = BurpApiClient()
 
     def log_message(self, format, *args):
-        # Quiet standard output during normal server operation
         pass
 
     def _json(self, data, status=HTTPStatus.OK):
@@ -346,8 +510,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _xml(self, xml_str: str, filename: str = "bountybot_burp_export.xml"):
+        body = xml_str.encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/xml; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         url = urlsplit(self.path)
+        qs = parse_qs(url.query)
+
         if url.path in ("/", "/index.html", "/dashboard"):
             return self._html(DASHBOARD_HTML)
 
@@ -356,6 +531,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             totals = m.get("totals", {})
             findings = self.store.findings()
             pending = self.gate.pending()
+            burp_probe = self.burp_client.probe()
             return self._json({
                 "pending_count": len(pending),
                 "confirmed_count": sum(1 for f in findings if f.status == "confirmed"),
@@ -364,7 +540,103 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "total_bounty": totals.get("bounty_total", 0.0),
                 "kill_active": killswitch.active(),
                 "kill_reason": killswitch.reason(),
+                "burp_api": burp_probe,
             })
+
+        # P7 Workspace APIs
+        if url.path == "/api/workspace/candidates":
+            findings = self.store.findings()
+            out = []
+            for f in findings:
+                tier = "Observation"
+                if f.status == "confirmed":
+                    tier = "Verified Finding"
+                elif f.status == "candidate":
+                    tier = "Candidate"
+                elif f.status == "inconclusive":
+                    tier = "Inconclusive Result"
+
+                dual_role = None
+                if len(f.evidence) >= 2 and f.evidence[-2].exchange and f.evidence[-1].exchange:
+                    owner_ex = f.evidence[-2].exchange
+                    attacker_ex = f.evidence[-1].exchange
+                    dual_role = {
+                        "identity_a": f.meta.get("identity_a", "Role A"),
+                        "a_status": owner_ex.status,
+                        "a_excerpt": (owner_ex.response_body or "")[:300],
+                        "identity_b": f.meta.get("identity_b", "Role B"),
+                        "b_status": attacker_ex.status,
+                        "b_excerpt": (attacker_ex.response_body or "")[:300],
+                    }
+
+                out.append({
+                    "id": f.id,
+                    "title": f.title,
+                    "bug_class": f.bug_class,
+                    "severity": f.severity,
+                    "status": f.status,
+                    "tier": tier,
+                    "url": f.url,
+                    "dual_role": dual_role,
+                    "verification_note": f.meta.get("verify", {}).get("verdict") if f.meta.get("verify") else f.status,
+                })
+            return self._json(out)
+
+        if url.path == "/api/workspace/exchanges":
+            host_filter = qs.get("host", [""])[0].strip().lower()
+            method_filter = qs.get("method", [""])[0].strip().upper()
+
+            sql = "SELECT id, tool, method, url, status, duration_ms, created_at FROM exchanges WHERE 1=1"
+            params = []
+            if host_filter:
+                sql += " AND url LIKE ?"
+                params.append(f"%{host_filter}%")
+            if method_filter:
+                sql += " AND method = ?"
+                params.append(method_filter)
+            sql += " ORDER BY id DESC LIMIT 100"
+
+            rows = self.store.conn.execute(sql, params).fetchall()
+            return self._json([dict(r) for r in rows])
+
+        if url.path == "/api/workspace/export_burp":
+            finding_id = qs.get("finding_id", [None])[0]
+            exchange_id = qs.get("exchange_id", [None])[0]
+
+            if finding_id:
+                f = self.store.get_finding(finding_id)
+                if not f:
+                    return self._json({"error": "finding not found"}, status=HTTPStatus.NOT_FOUND)
+                xml_out = export_finding_to_burp(f)
+                return self._xml(xml_out, filename=f"finding_{finding_id}_burp.xml")
+
+            elif exchange_id:
+                row = self.store.conn.execute("SELECT * FROM exchanges WHERE id = ?", (exchange_id,)).fetchone()
+                if not row:
+                    return self._json({"error": "exchange not found"}, status=HTTPStatus.NOT_FOUND)
+                ex = Exchange(
+                    method=row["method"],
+                    url=row["url"],
+                    status=row["status"],
+                    request_headers=json.loads(row["req_headers"] or "{}"),
+                    request_body=row["req_body"] or "",
+                    response_headers=json.loads(row["resp_headers"] or "{}"),
+                    response_body=row["resp_body"] or "",
+                    duration_ms=row["duration_ms"] or 0,
+                    at=row["created_at"],
+                )
+                xml_out = export_exchanges_to_burp_xml([ex])
+                return self._xml(xml_out, filename=f"exchange_{exchange_id}_burp.xml")
+
+            else:
+                findings = self.store.findings()
+                all_exchanges = []
+                for f in findings:
+                    for ev in f.evidence:
+                        if ev.exchange:
+                            all_exchanges.append(ev.exchange)
+                xml_out = export_exchanges_to_burp_xml(all_exchanges)
+                return self._xml(xml_out, filename="bountybot_candidates_burp.xml")
 
         if url.path == "/api/queue":
             pending = self.gate.pending()
@@ -397,12 +669,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             routes = self.store.routes()
             return self._json(routes)
 
+        if url.path == "/api/learning":
+            report = learn.learning_report(self.store)
+            return self._json(report)
+
         if url.path == "/api/status":
             from bb import tev1, llm
             from bb.coder.adapter import QwenCoderAdapter
             from bb.decision.evaluator import DecisionEvaluator
 
-            # Tev1 local status
             tev1_client = tev1.Tev1Client()
             tev1_report = None
             try:
@@ -412,7 +687,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             finally:
                 tev1_client.close()
 
-            # Qwen status
             qwen_adapter = QwenCoderAdapter()
             qwen_ok = False
             qwen_models = []
@@ -423,14 +697,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-            # Recent run & tasks
             latest_run = self.store.conn.execute("SELECT * FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()
             run_dict = dict(latest_run) if latest_run else None
             task_counts = self.store.task_counts(run_dict["id"]) if run_dict else {}
             findings = self.store.findings(run_id=run_dict["id"]) if run_dict else []
             candidate_count = sum(1 for f in findings if f.status == "candidate")
 
-            # Decision eval
             evaluator = DecisionEvaluator()
             eval_report = evaluator.generate_report(run_id=run_dict["id"] if run_dict else None)
 
@@ -485,6 +757,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return self._json({"status": "success", "item": item})
             except Exception as e:
                 return self._json({"error": str(e)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        if url.path == "/api/workspace/review":
+            finding_id = payload.get("id")
+            if not finding_id:
+                return self._json({"error": "missing id"}, status=HTTPStatus.BAD_REQUEST)
+            finding = self.store.get_finding(finding_id)
+            if not finding:
+                return self._json({"error": "finding not found"}, status=HTTPStatus.NOT_FOUND)
+            finding.meta["manual_review"] = "approved"
+            finding.meta["reviewed_by"] = "researcher_workspace"
+            self.store.update_meta(finding_id, **finding.meta)
+            return self._json({"status": "success", "finding_id": finding_id})
 
         if url.path == "/api/killswitch/stop":
             reason = payload.get("reason", "manual stop from dashboard UI")

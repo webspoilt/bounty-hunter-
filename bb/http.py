@@ -80,6 +80,7 @@ class ScopedClient:
         self.max_requests = max_requests
         self.deadline = deadline
         self.shared = shared            # when set, count/deadline/pacing are collective
+        self.proxy = proxy
         self.dry_run = dry_run
         self.store = store
         self.run_id = run_id

@@ -1233,6 +1233,56 @@ def cmd_authz(args) -> int:
 # ============================================================
 
 
+
+def cmd_burp(args) -> int:
+    from bb.burp_api import BurpApiClient
+    from bb.burp_export import export_exchanges_to_burp_xml, export_finding_to_burp
+    from bb.store import Store
+
+    ensure_dirs()
+    action = getattr(args, "burp_action", None)
+
+    if action == "status":
+        client = BurpApiClient(base_url=args.url or "http://127.0.0.1:1337", api_key=args.key)
+        probe = client.probe()
+        if args.json:
+            print(json.dumps(probe, indent=2))
+            return 0
+        print("Burp Suite REST API Probe Status:")
+        print(f"  Available:    {probe['available']}")
+        print(f"  Edition:      {probe['edition']}")
+        print(f"  Version:      {probe.get('version') or 'n/a'}")
+        print(f"  Base URL:     {probe['base_url']}")
+        print(f"  Capabilities: {', '.join(probe.get('supported_capabilities', [])) or '(none)'}")
+        print(f"  Detail:       {probe['detail']}")
+        return 0
+
+    elif action == "export":
+        store = Store()
+        out_file = args.out or "bountybot_burp_export.xml"
+        if args.finding:
+            f = store.get_finding(args.finding)
+            if not f:
+                print(f"error: finding not found: {args.finding}", file=sys.stderr)
+                return 1
+            export_finding_to_burp(f, output_path=out_file)
+            print(f"Exported finding {args.finding} evidence to {out_file} (Burp XML format).")
+            return 0
+        else:
+            findings = store.findings()
+            all_exchanges = []
+            for f in findings:
+                for ev in f.evidence:
+                    if ev.exchange:
+                        all_exchanges.append(ev.exchange)
+            export_exchanges_to_burp_xml(all_exchanges, output_path=out_file)
+            print(f"Exported {len(all_exchanges)} exchange(s) across {len(findings)} finding(s) to {out_file}.")
+            return 0
+    else:
+        print("Use bb burp --help for subcommands.")
+        return 0
+
+
 def cmd_intel(args) -> int:
     from bb.intelligence import IntelligenceEngine
     ensure_dirs()
@@ -1562,6 +1612,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="use legacy single-pass execution loop")
     au.set_defaults(func=cmd_auto)
 
+
+
+    bp = sub.add_parser("burp", help="Burp Suite integration (status probe, XML export, API bridge)")
+    bp_sub = bp.add_subparsers(dest="burp_action", required=True)
+
+    bp_status = bp_sub.add_parser("status", help="probe Burp Suite REST API status and capabilities")
+    bp_status.add_argument("--url", default="http://127.0.0.1:1337", help="Burp REST API endpoint")
+    bp_status.add_argument("--key", help="Burp REST API key")
+    bp_status.add_argument("--json", action="store_true")
+    bp_status.set_defaults(func=cmd_burp)
+
+    bp_export = bp_sub.add_parser("export", help="export evidence exchanges to Burp XML format")
+    bp_export.add_argument("--finding", help="export specific finding ID evidence")
+    bp_export.add_argument("--out", help="destination XML path (default: bountybot_burp_export.xml)")
+    bp_export.set_defaults(func=cmd_burp)
 
     intel = sub.add_parser("intel", help="security intelligence engine (CVE, CWE, CAPEC, advisories, priors)")
     intel_sub = intel.add_subparsers(dest="intel_action", required=True)

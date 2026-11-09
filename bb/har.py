@@ -14,7 +14,7 @@ import base64
 import binascii
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -48,6 +48,8 @@ class HarEntry:
     response_headers: dict[str, str]
     response_body: str
     duration_ms: int
+    started_at: str | None = None
+    auth_context: dict[str, str] = field(default_factory=dict)
 
 
 def _clean(text: str) -> str:
@@ -83,6 +85,27 @@ def _headers(items) -> dict[str, str]:
         if name:
             out[name] = str(item.get("value") or "")
     return out
+
+
+def _detect_auth_context(raw_req_headers: dict[str, str]) -> dict[str, str]:
+    """Detects authentication hints (e.g. bearer, basic, cookie session) without exposing secrets."""
+    ctx: dict[str, str] = {}
+    for k, v in raw_req_headers.items():
+        k_lower = k.lower()
+        if k_lower == "authorization":
+            val_lower = v.lower()
+            if val_lower.startswith("bearer"):
+                ctx["auth_type"] = "bearer"
+            elif val_lower.startswith("basic"):
+                ctx["auth_type"] = "basic"
+            else:
+                ctx["auth_type"] = "custom_auth"
+        elif k_lower in ("x-api-key", "api-key", "token", "x-auth-token"):
+            ctx["auth_type"] = "api_key"
+        elif k_lower == "cookie":
+            if any(s in v.lower() for s in ("session", "token", "auth", "jwt", "sid")):
+                ctx["session_cookie"] = "present"
+    return ctx
 
 
 def _request_headers(req: dict) -> dict[str, str]:
@@ -144,12 +167,18 @@ def load_har(path: str | Path) -> list[HarEntry]:
         if isinstance(post, dict) and isinstance(post.get("text"), str):
             body = redact_body(_clean(post["text"]), cap=BODY_CAP)
         resp = raw.get("response") or {}
+
+        raw_req_headers = _headers(req.get("headers"))
+        auth_ctx = _detect_auth_context(raw_req_headers)
+
         entries.append(HarEntry(
             index=index, method=method, url=url, status=_status(raw),
-            request_headers=_request_headers(req), request_body=body,
+            request_headers=redact_headers(raw_req_headers), request_body=body,
             response_headers=redact_headers(_headers(resp.get("headers"))),
             response_body=redact_body(_decode_body(resp.get("content") or {}), cap=BODY_CAP),
             duration_ms=_duration(raw),
+            started_at=raw.get("startedDateTime"),
+            auth_context=auth_ctx,
         ))
     return entries
 
@@ -188,9 +217,10 @@ def import_har(path: str | Path, scope: Scope, store, run_id: str, log=print) ->
         if key not in seen_endpoints:
             seen_endpoints.add(key)
             params = sorted(parse_qs(urlsplit(entry.url).query).keys())
+            auth_hint = entry.auth_context.get("auth_type") or entry.auth_context.get("session_cookie") or ""
             store.add_endpoint(run_id, entry.url, method=entry.method, host=host,
                                path=urlsplit(entry.url).path or "/", source="har",
-                               params=params)
+                               params=params, auth_hint=auth_hint)
             endpoints.append({"method": entry.method, "url": entry.url,
                               "id_bearing": count_ids(entry.url)})
             stats["endpoints"] += 1
