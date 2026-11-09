@@ -380,6 +380,30 @@ free of response bodies. If your Ollama does not serve the Tev1 contract, `bb in
 reports the miss and the loop runs unchanged on the deterministic fallback; `--no-tev1`
 skips the consultation entirely.
 
+### 5.10 Persistent research controller (orchestration engine)
+
+The persistent research controller (b/orchestrator/controller.py) manages autonomous
+investigation loops through an explicit, validated, and persisted 11-state machine:
+
+DISCOVERING -> MAPPING -> ANALYZING -> PLANNING -> POLICY_REVIEW -> EXECUTING -> VERIFYING -> LEARNING -> COMPLETED / PAUSED / ABORTED
+
+#### Key architectural properties:
+1. **18-Step Controlled Loop**: Validates program/scope, loads persisted checkpoints,
+   discovers eligible candidates, asks local Tev1 for advisory prioritization, checks
+   task eligibility again, resolves registered specialists, applies deterministic policy
+   validation, enforces human approval gates for writes, atomically claims tasks, executes
+   strictly through controlled components, stores evidence, queues independent verification,
+   updates learning priors, and continues or completes.
+2. **Strict Authority Boundaries**: Tev1 only recommends (task prioritization, specialist
+   selection, reasoning model selection, hypothesis review). Tev1 **cannot** modify scope,
+   override the kill switch, increase request budgets, create arbitrary executable tasks,
+   register arbitrary agents, approve state-changing tests, or submit reports.
+3. **Lease-Based Crash Recovery**: Tasks are claimed atomically in the existing SQLite
+   ledger (	asks table) with lease durations (lease_seconds, default 300s). If a process
+   crashes or the machine restarts, orphaned running tasks are recovered automatically.
+4. **Clean Operator Controls**: Pause and resume at any point via CLI (b controller pause /
+   b controller resume), preserving full state in SQLite runs.
+
 ## 6 Â· Evaluation
 
 **Setup.** Reference machine: Windows, Python 3.12.10, `httpx` 0.28.1, local Ollama
@@ -512,6 +536,8 @@ bb scope import --program acme --from file --file data/scopes/acme.json
 | `bb telegram [--push-only]` | allow-listed review from a phone |
 | `bb duplicate pull\|ingest\|stats\|search\|check` | disclosed-report duplicate prior and checklist (`pip install -e .[h1]`) |
 | `bb auto ... --no-tev1` / `--no-ai` | autonomous loop; Tev1 structured triage decisions and LLM analysis are independently skippable |
+
+| b controller status\|pause\|resume\|abort\|run | persistent research controller & state machine |
 
 ### 7.4 Accounts file
 

@@ -804,12 +804,281 @@ def cmd_auto(args) -> int:
         ai_analysis=not args.no_ai,
         queue=not args.no_queue,
         tev1=not args.no_tev1,
+        controller=getattr(args, "controller", True),
     )
     hunter = AutoHunter(cfg)
     res = hunter.run()
     print("\nAutonomous Run Summary:")
     print(json.dumps(res, indent=2))
     return 0
+
+
+def cmd_controller(args) -> int:
+    from bb.orchestrator.controller import Controller, ControllerConfig
+    from bb.orchestrator.lifecycle import LifecycleManager, State
+    store = Store()
+
+    if args.action == "status":
+        run_id = args.run
+        if not run_id:
+            latest = store.latest_run()
+            if not latest:
+                print("no runs found")
+                return 1
+            run_id = latest["id"]
+        run_data = store.run(run_id)
+        if not run_data:
+            print(f"no run matching {run_id!r}")
+            return 1
+        meta = json.loads(run_data["meta"] or "{}") if isinstance(run_data.get("meta"), str) else (run_data.get("meta") or {})
+        tasks = store.task_counts(run_id)
+        findings = store.findings(run_id=run_id)
+        print(f"run:        {run_id} ({run_data.get('program')})")
+        print(f"state:      {meta.get('state', 'UNKNOWN')}")
+        print(f"started:    {run_data.get('started_at')}")
+        print(f"ended:      {run_data.get('ended_at') or 'in-flight'}")
+        print(f"tasks:      {tasks}")
+        print(f"findings:   {len(findings)}")
+        if meta.get("state_history"):
+            print("\nrecent state transitions:")
+            for h in meta["state_history"][-5:]:
+                print(f"  {h.get('at')}: {h.get('from')} -> {h.get('to')} ({h.get('reason')})")
+        return 0
+
+    if args.action == "pause":
+        run_id = args.run
+        if not run_id:
+            latest = store.latest_run()
+            if not latest:
+                print("no runs found")
+                return 1
+            run_id = latest["id"]
+        lm = LifecycleManager(store, run_id)
+        lm.pause(reason=args.reason or "cli pause")
+        print(f"run {run_id} paused. resume with: bb controller resume --run {run_id}")
+        return 0
+
+    if args.action == "resume":
+        run_id = args.run
+        if not run_id:
+            latest = store.latest_run()
+            if not latest:
+                print("no runs found")
+                return 1
+            run_id = latest["id"]
+        run_data = store.run(run_id)
+        if not run_data:
+            print(f"no run matching {run_id!r}")
+            return 1
+        lm = LifecycleManager(store, run_id)
+        lm.resume(reason="cli resume")
+        print(f"run {run_id} resumed into state {lm.state.value}.")
+        return 0
+
+    if args.action == "abort":
+        run_id = args.run
+        if not run_id:
+            latest = store.latest_run()
+            if not latest:
+                print("no runs found")
+                return 1
+            run_id = latest["id"]
+        lm = LifecycleManager(store, run_id)
+        lm.abort(reason=args.reason or "cli abort")
+        print(f"run {run_id} aborted.")
+        return 0
+
+    if args.action == "run":
+        _require_not_stopped()
+        scope = _scope_or_die(args.program)
+        accounts = load_accounts(accounts_path(args.accounts)) if args.accounts else None
+        entries = args.entry or [f"https://{h}" for h in scope.apex_domains() if not h.startswith("*")]
+        if not entries:
+            raise SystemExit("no entry URLs found; supply via --entry https://target.com")
+
+        cfg = ControllerConfig(
+            program=args.program,
+            scope=scope,
+            entry_urls=entries,
+            accounts=accounts,
+            rate=args.rate,
+            max_requests=args.max_requests,
+            timeout=args.timeout,
+            proxy=args.proxy,
+            dry_run=args.dry_run,
+            cbh=args.cbh,
+            llm=args.llm,
+            workers=args.workers,
+            allow_write=args.allow_write,
+            run_waf_probe=not args.no_waf,
+            cve_match=not args.no_cve,
+            ai_analysis=not args.no_ai,
+            queue=not args.no_queue,
+            tev1=not args.no_tev1,
+        )
+        ctrl = Controller(cfg, store=store)
+        res = ctrl.run()
+        print("\nPersistent Controller Summary:")
+        print(json.dumps(res, indent=2))
+        return 0
+
+    return 1
+
+
+def cmd_handoff(args) -> int:
+    from bb.coder.manifest import TaskManifest, DEFAULT_MANIFEST_PATH
+    from bb.coder.provider import ProviderStateManager, WorktreeLock, LockConflictError
+
+    mgr = ProviderStateManager()
+    lock = mgr.lock
+
+    if args.action == "status":
+        manifest = None
+        if DEFAULT_MANIFEST_PATH.exists():
+            try:
+                manifest = TaskManifest.load()
+            except Exception:
+                pass
+        status_info = mgr.get_status(manifest)
+        if getattr(args, "json", False):
+            print(json.dumps(status_info, indent=2))
+        else:
+            print("=== CODING AGENT HANDOFF STATUS ===")
+            print(f"Active Provider:   {status_info['active_provider']}")
+            print(f"Primary Provider:  {status_info['primary_provider']}")
+            print(f"Fallback Provider: {status_info['fallback_provider']}")
+            print(f"Last Switch:       {status_info['last_switch_at']} ({status_info['last_switch_reason']})")
+            lk = status_info["lock"]
+            print(f"Worktree Lock:     {'LOCKED' if lk['locked'] else 'UNLOCKED'} (stale: {lk['stale']})")
+            if lk["info"]:
+                print(f"  Owner:           {lk['info'].get('owner')} (PID {lk['info'].get('pid')})")
+                print(f"  Acquired:        {lk['info'].get('acquired_at')}")
+            ms = status_info["manifest_summary"]
+            if ms and ms["task_id"]:
+                print(f"Active Task:       {ms['task_id']}")
+                print(f"Objective:         {ms['objective']}")
+                commit_abbr = ms['last_commit'][:10] if ms['last_commit'] else 'none'
+                print(f"Branch / Commit:   {ms['branch']} @ {commit_abbr}")
+                print(f"Dirty Files:       {ms['files_changed_count']}")
+            else:
+                print("Active Task:       None (no manifest found)")
+        return 0
+
+    if args.action == "create":
+        manifest = TaskManifest(
+            task_id=args.task_id,
+            objective=args.objective,
+            current_provider=mgr.active_provider,
+            acceptance_criteria=args.criteria if args.criteria else [],
+            unfinished_tasks=args.unfinished if args.unfinished else [],
+        )
+        manifest.refresh_git_status()
+        p = manifest.save()
+        print(f"Task manifest initialized at {p}")
+        return 0
+
+    if args.action == "switch":
+        to_target = args.to.lower()
+        reason = getattr(args, "reason", "") or f"switched via CLI to {to_target}"
+        manifest = None
+        if DEFAULT_MANIFEST_PATH.exists():
+            try:
+                manifest = TaskManifest.load()
+            except Exception:
+                pass
+        if not manifest:
+            manifest = TaskManifest(
+                task_id=getattr(args, "task_id", "") or "untracked-task",
+                objective="Coding task handoff",
+            )
+
+        force = getattr(args, "force", False)
+        try:
+            if to_target in ("fallback", "qwen"):
+                res = mgr.switch_to_fallback(manifest, reason=reason, force_lock=force)
+            elif to_target in ("primary", "antigravity", "codex"):
+                p_name = to_target if to_target != "primary" else None
+                res = mgr.switch_to_primary(manifest, primary_name=p_name, reason=reason, force_lock=force)
+            else:
+                print(f"Unknown target provider: {to_target}. Choose 'primary' or 'fallback'.", file=sys.stderr)
+                return 1
+            print("Successfully switched coding provider:")
+            print(json.dumps(res, indent=2))
+            return 0
+        except LockConflictError as exc:
+            print(f"Lock conflict error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.action == "update":
+        if not DEFAULT_MANIFEST_PATH.exists():
+            print("No task manifest found. Run 'bb handoff create' first.", file=sys.stderr)
+            return 1
+        manifest = TaskManifest.load()
+        manifest.refresh_git_status()
+        if getattr(args, "next_action", None):
+            manifest.next_action = args.next_action
+        if getattr(args, "test_results", None):
+            try:
+                manifest.test_results = json.loads(args.test_results)
+            except Exception:
+                manifest.test_results = {"summary": args.test_results}
+        if getattr(args, "criteria", None):
+            manifest.acceptance_criteria.extend(args.criteria)
+        if getattr(args, "issue", None):
+            manifest.known_issues.append(args.issue)
+        manifest.save()
+        print("Task manifest updated with current git status and options.")
+        return 0
+
+    if args.action == "lock":
+        sub_act = getattr(args, "lock_action", "status")
+        if sub_act == "status":
+            info = lock.get_info()
+            print(f"Locked: {lock.is_locked()}, Stale: {lock.is_stale(info)}")
+            print(json.dumps(info or {}, indent=2))
+            return 0
+        if sub_act == "acquire":
+            owner = getattr(args, "owner", "") or mgr.active_provider
+            force = getattr(args, "force", False)
+            if lock.acquire(owner=owner, force=force):
+                print(f"Acquired worktree lock for '{owner}'")
+                return 0
+            else:
+                print("Failed to acquire lock (already held). Use --force to override.", file=sys.stderr)
+                return 1
+        if sub_act == "release":
+            owner = getattr(args, "owner", "")
+            force = getattr(args, "force", False)
+            if lock.release(owner=owner, force=force):
+                print("Worktree lock released.")
+                return 0
+            else:
+                print("Failed to release lock (owner mismatch). Use --force to override.", file=sys.stderr)
+                return 1
+
+    if args.action == "plan":
+        if not DEFAULT_MANIFEST_PATH.exists():
+            print("No task manifest found. Run 'bb handoff create' first.", file=sys.stderr)
+            return 1
+        manifest = TaskManifest.load()
+        print("=== LOCAL QWEN CODER TASK BRIEF ===")
+        print(f"TASK ID:    {manifest.task_id}")
+        print(f"OBJECTIVE:  {manifest.objective}")
+        print(f"BRANCH:     {manifest.branch}")
+        print(f"COMMIT:     {manifest.last_known_commit}")
+        print("\nACCEPTANCE CRITERIA:")
+        for ac in manifest.acceptance_criteria:
+            print(f"  * {ac}")
+        print("\nFILES DIRTY / CHANGED:")
+        for fc in manifest.files_changed:
+            print(f"  * {fc}")
+        print("\nUNFINISHED TASKS:")
+        for ut in manifest.unfinished_tasks:
+            print(f"  * {ut}")
+        print(f"\nNEXT RECOMMENDED ACTION:\n  {manifest.next_action}")
+        return 0
+
+    return 1
 
 
 def cmd_dashboard(args) -> int:
@@ -1129,7 +1398,47 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--no-tev1", action="store_true",
                     help="skip the structured decision model (Tev1)")
     au.add_argument("--no-queue", action="store_true")
+    au.add_argument("--controller", dest="controller", action="store_true", default=True,
+                    help="use persistent orchestrator controller (default)")
+    au.add_argument("--legacy", dest="controller", action="store_false",
+                    help="use legacy single-pass execution loop")
     au.set_defaults(func=cmd_auto)
+
+    ctrl = sub.add_parser("controller", help="persistent research controller (status, pause, resume, run)")
+    ctrl_sub = ctrl.add_subparsers(dest="action", required=True)
+    c_status = ctrl_sub.add_parser("status", help="show controller state and task statistics")
+    c_status.add_argument("--run", help="run ID (defaults to latest)")
+    c_status.set_defaults(func=cmd_controller)
+    c_pause = ctrl_sub.add_parser("pause", help="pause execution cleanly")
+    c_pause.add_argument("--run", help="run ID (defaults to latest)")
+    c_pause.add_argument("--reason", help="reason for pausing")
+    c_pause.set_defaults(func=cmd_controller)
+    c_resume = ctrl_sub.add_parser("resume", help="resume execution from paused state")
+    c_resume.add_argument("--run", help="run ID (defaults to latest)")
+    c_resume.set_defaults(func=cmd_controller)
+    c_abort = ctrl_sub.add_parser("abort", help="abort controller run permanently")
+    c_abort.add_argument("--run", help="run ID (defaults to latest)")
+    c_abort.add_argument("--reason", help="reason for aborting")
+    c_abort.set_defaults(func=cmd_controller)
+    c_run = ctrl_sub.add_parser("run", help="run persistent controller directly")
+    c_run.add_argument("--program", required=True)
+    c_run.add_argument("--entry", action="append", help="entry URL (repeatable)")
+    c_run.add_argument("--accounts", help="accounts JSON file")
+    c_run.add_argument("--rate", type=float, default=2.0)
+    c_run.add_argument("--max-requests", type=int, default=200)
+    c_run.add_argument("--timeout", type=float, default=15.0)
+    c_run.add_argument("--proxy")
+    c_run.add_argument("--dry-run", action="store_true")
+    c_run.add_argument("--cbh", action="store_true")
+    c_run.add_argument("--llm", action="store_true")
+    c_run.add_argument("--workers", type=int, default=4)
+    c_run.add_argument("--allow-write", action="store_true")
+    c_run.add_argument("--no-waf", action="store_true")
+    c_run.add_argument("--no-cve", action="store_true")
+    c_run.add_argument("--no-ai", action="store_true")
+    c_run.add_argument("--no-tev1", action="store_true")
+    c_run.add_argument("--no-queue", action="store_true")
+    c_run.set_defaults(func=cmd_controller)
 
     cv = sub.add_parser("cve", help="local CVE knowledge base (query, import, stats)")
     csub = cv.add_subparsers(dest="action", required=True)
@@ -1166,6 +1475,44 @@ def build_parser() -> argparse.ArgumentParser:
     az.add_argument("finding", help="finding ID or prefix")
     az.add_argument("--llm", action="store_true", help="use local Ollama model for deep analysis")
     az.set_defaults(func=cmd_analyze)
+
+    ho = sub.add_parser("handoff", help="coding agent handoff & worktree lock management")
+    hsub = ho.add_subparsers(dest="action", required=True)
+
+    hs = hsub.add_parser("status", help="show handoff status, active provider and worktree lock")
+    hs.add_argument("--json", action="store_true")
+    hs.set_defaults(func=cmd_handoff)
+
+    hc = hsub.add_parser("create", help="create a new persistent task manifest")
+    hc.add_argument("--task-id", required=True)
+    hc.add_argument("--objective", required=True)
+    hc.add_argument("--criteria", action="append", help="acceptance criterion (repeatable)")
+    hc.add_argument("--unfinished", action="append", help="unfinished task (repeatable)")
+    hc.set_defaults(func=cmd_handoff)
+
+    hw = hsub.add_parser("switch", help="switch active coding provider (primary <-> fallback)")
+    hw.add_argument("--to", required=True, choices=["primary", "fallback", "antigravity", "codex", "qwen"])
+    hw.add_argument("--reason", default="", help="reason for handoff (e.g. 'token quota exhausted')")
+    hw.add_argument("--task-id", default="", help="task ID if updating or creating manifest")
+    hw.add_argument("--force", action="store_true", help="force override existing worktree lock")
+    hw.set_defaults(func=cmd_handoff)
+
+    hu = hsub.add_parser("update", help="refresh git status/diff and update manifest")
+    hu.add_argument("--test-results", help="test results JSON or summary string")
+    hu.add_argument("--next-action", help="next recommended action")
+    hu.add_argument("--criteria", action="append", help="add acceptance criterion (repeatable)")
+    hu.add_argument("--issue", help="record a known issue")
+    hu.set_defaults(func=cmd_handoff)
+
+    hl = hsub.add_parser("lock", help="manage worktree single-writer lock")
+    hl.add_argument("lock_action", choices=["status", "acquire", "release"])
+    hl.add_argument("--owner", help="lock owner name")
+    hl.add_argument("--force", action="store_true", help="force lock acquire/release")
+    hl.set_defaults(func=cmd_handoff)
+
+    hp = hsub.add_parser("plan", help="format task brief for local Qwen Coder from manifest")
+    hp.set_defaults(func=cmd_handoff)
+
     return p
 
 

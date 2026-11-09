@@ -52,6 +52,7 @@ class AutoHunterConfig:
     ai_analysis: bool = True
     queue: bool = True
     tev1: bool = True
+    controller: bool = False
     check_options: CheckOptions = field(default_factory=CheckOptions)
 
 
@@ -93,7 +94,45 @@ class AutoHunter:
             return {"decision_point": "auto-triage", "source": "deterministic-fallback",
                     "choice": "none", "reason": f"decision client error: {exc}"}
 
-    def run(self) -> dict:
+    def run(self, use_controller: bool | None = None) -> dict:
+        should_use_controller = self.cfg.controller if use_controller is None else use_controller
+        if should_use_controller:
+            from bb.orchestrator.controller import Controller, ControllerConfig
+            ctrl_cfg = ControllerConfig(
+                program=self.cfg.program,
+                scope=self.cfg.scope,
+                entry_urls=self.cfg.entry_urls,
+                accounts=self.cfg.accounts,
+                rate=self.cfg.rate,
+                max_requests=self.cfg.max_requests,
+                timeout=self.cfg.timeout,
+                proxy=self.cfg.proxy,
+                dry_run=self.cfg.dry_run,
+                cbh=self.cfg.cbh,
+                llm=self.cfg.llm,
+                workers=self.cfg.workers,
+                run_waf_probe=self.cfg.run_waf_probe,
+                cve_match=self.cfg.cve_match,
+                ai_analysis=self.cfg.ai_analysis,
+                queue=self.cfg.queue,
+                tev1=self.cfg.tev1,
+                check_options=self.cfg.check_options,
+            )
+            ctrl = Controller(ctrl_cfg, store=self.store, log=self.log)
+            res = ctrl.run()
+            assets = self.store.assets(ctrl.run_id)
+            endpoints = self.store.endpoints(ctrl.run_id)
+            findings = self.store.findings(run_id=ctrl.run_id)
+            verified = [f for f in findings if f.status == "confirmed"]
+            return {
+                "status": res["status"],
+                "run_id": ctrl.run_id,
+                "assets": len(assets),
+                "endpoints": len(endpoints),
+                "findings": len(findings),
+                "verified": len(verified),
+            }
+
         if kill_active():
             self.log("[!] Kill switch is active. Aborting autonomous hunter.")
             return {"status": "aborted", "reason": "kill_switch_active", "run_id": self.run_id}
