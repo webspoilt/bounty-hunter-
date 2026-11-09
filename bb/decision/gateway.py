@@ -196,3 +196,58 @@ class DecisionGateway:
             question="recommend a triage verdict for this finding",
             default="none",
         )
+
+    def select_hypothesis(
+        self,
+        candidate_hypotheses: list[dict[str, Any]],
+        context: dict[str, Any] | None = None,
+    ) -> dict:
+        """Ask Tev1 to select or prioritize a test hypothesis from candidates."""
+        if not candidate_hypotheses:
+            return {
+                "decision_point": "hypothesis-selection",
+                "source": tev1.FALLBACK_SOURCE,
+                "choice": None,
+                "reason": "no candidate hypotheses provided",
+                "model": tev1.MODEL_TAG,
+                "contract": tev1.CONTRACT,
+                "options": [],
+                "confidence": None,
+            }
+
+        hypo_ids = [h.get("hypothesis_id") or f"hypo-{i}" for i, h in enumerate(candidate_hypotheses)]
+        options = list(hypo_ids) + [tev1.NONE]
+        default_choice = hypo_ids[0]
+
+        ctx = {
+            "candidate_count": len(candidate_hypotheses),
+            "candidates": [
+                {
+                    "id": h.get("hypothesis_id") or f"hypo-{i}",
+                    "vuln_class": h.get("vuln_class"),
+                    "severity": h.get("severity"),
+                    "endpoint": h.get("endpoint"),
+                    "prior_weight": h.get("meta", {}).get("feedback_prior"),
+                    "intel_score": h.get("meta", {}).get("intel_rank_score"),
+                }
+                for i, h in enumerate(candidate_hypotheses[:8])
+            ],
+        }
+        if context:
+            ctx.update(context)
+
+        dec = self._decide(
+            "hypothesis-selection",
+            options,
+            ctx,
+            question="select the most promising test hypothesis based on evidence and priors",
+            default=default_choice,
+        )
+
+        choice = dec.get("choice")
+        if choice not in options:
+            dec["source"] = tev1.FALLBACK_SOURCE
+            dec["choice"] = default_choice
+            dec["reason"] = f"invalid hypothesis choice {choice!r}; fallback applied"
+
+        return dec

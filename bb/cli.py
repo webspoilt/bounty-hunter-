@@ -1232,6 +1232,82 @@ def cmd_authz(args) -> int:
 # parser
 # ============================================================
 
+
+def cmd_intel(args) -> int:
+    from bb.intelligence import IntelligenceEngine
+    ensure_dirs()
+    engine = IntelligenceEngine()
+    try:
+        action = getattr(args, "intel_action", None)
+        if action == "ingest":
+            target_path = Path(args.file)
+            if not target_path.exists():
+                print(f"error: file not found: {args.file}", file=sys.stderr)
+                return 1
+            with open(target_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            kind = args.kind
+            if kind == "cve":
+                ids = engine.ingest_nvd_cve(data)
+            elif kind == "cwe":
+                ids = engine.ingest_cwe(data)
+            elif kind == "capec":
+                ids = engine.ingest_capec(data)
+            elif kind == "advisory":
+                ids = engine.ingest_advisory(data)
+            elif kind == "disclosure":
+                ids = engine.ingest_disclosure(data)
+            else:
+                print(f"unknown kind: {kind}", file=sys.stderr)
+                return 1
+            print(f"Successfully ingested {len(ids)} intelligence record(s) [{kind}].")
+            for rid in ids[:5]:
+                print(f"  - {rid}")
+            if len(ids) > 5:
+                print(f"  ... and {len(ids) - 5} more")
+            return 0
+
+        elif action == "query":
+            records = engine.query(
+                query=args.query,
+                vuln_class=args.vuln_class,
+                product=args.product,
+                version=args.version,
+                source=args.source,
+                limit=args.limit,
+            )
+            if args.json:
+                print(json.dumps([r.to_dict() for r in records], indent=2))
+                return 0
+            print(f"Found {len(records)} intelligence record(s):")
+            for r in records:
+                src = r.source.upper()
+                print(f"[{src}] {r.id}: {r.title} (class={r.vuln_class}, product={r.affected_product})")
+                print(f"    URL: {r.source_url} (freshness={r.data_freshness})")
+            return 0
+
+        elif action == "priors":
+            priors = engine.get_program_priors(program=args.program)
+            if args.json:
+                print(json.dumps(priors, indent=2))
+                return 0
+            prog_label = args.program or "(all)"
+            print(f"Hypothesis empirical priors for program={prog_label}:")
+            for cls_name, s in priors.items():
+                w = s['weight']
+                dec = s['decided']
+                conf = s['confirmed']
+                rej = s['rejected']
+                nt = s['note']
+                print(f"  {cls_name:25} weight={w:.2f}  decided={dec}  confirmed={conf}  rejected={rej}  ({nt})")
+            return 0
+        else:
+            print("Use bb intel --help for subcommands.")
+            return 0
+    finally:
+        engine.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bb", description=f"bountybot {__version__} — "
                                "scope-gated bug-bounty pipeline (nothing auto-submits)")
@@ -1485,6 +1561,30 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--legacy", dest="controller", action="store_false",
                     help="use legacy single-pass execution loop")
     au.set_defaults(func=cmd_auto)
+
+
+    intel = sub.add_parser("intel", help="security intelligence engine (CVE, CWE, CAPEC, advisories, priors)")
+    intel_sub = intel.add_subparsers(dest="intel_action", required=True)
+
+    in_ingest = intel_sub.add_parser("ingest", help="ingest intelligence feed file")
+    in_ingest.add_argument("--file", required=True, help="path to JSON intelligence feed")
+    in_ingest.add_argument("--kind", choices=["cve", "cwe", "capec", "advisory", "disclosure"], required=True)
+    in_ingest.set_defaults(func=cmd_intel)
+
+    in_query = intel_sub.add_parser("query", help="search security intelligence records")
+    in_query.add_argument("query", nargs="?", help="search terms")
+    in_query.add_argument("--vuln-class", help="filter by vulnerability class")
+    in_query.add_argument("--product", help="filter by affected product")
+    in_query.add_argument("--version", help="filter and check against product version")
+    in_query.add_argument("--source", choices=["nvd", "cwe", "capec", "advisory", "disclosure"])
+    in_query.add_argument("--limit", type=int, default=20)
+    in_query.add_argument("--json", action="store_true")
+    in_query.set_defaults(func=cmd_intel)
+
+    in_priors = intel_sub.add_parser("priors", help="view learned empirical priors from hypothesis outcomes")
+    in_priors.add_argument("--program", help="filter by target program")
+    in_priors.add_argument("--json", action="store_true")
+    in_priors.set_defaults(func=cmd_intel)
 
     ctrl = sub.add_parser("controller", help="persistent research controller (status, pause, resume, run)")
     ctrl_sub = ctrl.add_subparsers(dest="action", required=True)
