@@ -41,6 +41,7 @@ from bb.killswitch import AbortRequested, active as kill_active
 from bb.models import Finding
 from bb.orchestrator.adaptive import SwarmMetrics
 from bb.orchestrator.agent_registry import AgentRegistry, AgentSpec
+from bb.orchestrator.specialists import SpecialistWorkerRegistry, SpecialistRole, SPECIALIST_ROLES
 from bb.orchestrator.lifecycle import LifecycleManager, State
 from bb.orchestrator.planner import Planner
 from bb.orchestrator.resource_manager import ResourceManager, SecurityPolicy
@@ -134,6 +135,7 @@ class Controller:
         self._metrics = SwarmMetrics()
 
         self.agent_registry = AgentRegistry()
+        self.specialist_registry = SpecialistWorkerRegistry()
         self.scheduler = Scheduler(self.store, self.run_id, lease_seconds=self.cfg.lease_seconds)
         self.planner = Planner(self.cfg.scope, self.store, self.cfg.program)
         self.decision_gateway = DecisionGateway()

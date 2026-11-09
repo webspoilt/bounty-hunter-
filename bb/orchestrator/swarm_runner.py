@@ -22,6 +22,8 @@ from bb.killswitch import active as kill_active
 from bb.models import Finding
 from bb.orchestrator.resource_manager import ResourceManager
 from bb.orchestrator.scheduler import Scheduler
+from bb.orchestrator.specialists import SpecialistWorkerRegistry
+from bb.orchestrator.task_protocol import TaskProtocol
 from bb.scope import Scope
 from bb.store import Store
 from bb.swarm import Task
@@ -57,6 +59,7 @@ class ControllerSwarmRunner:
         self.dry_run = dry_run
         self.lease_renew_interval = lease_renew_interval
         self.log = log
+        self.specialist_registry = SpecialistWorkerRegistry()
 
         self._shutdown_event = threading.Event()
         self._active_clients: list[ScopedClient] = []
@@ -118,10 +121,13 @@ class ControllerSwarmRunner:
                 store.add_finding(f, run_id=self.run_id)
 
             reqs_used = client.sent - before_reqs
+            role_meta = self.specialist_registry.select_role_for_task(task.kind)
             store.task_finish(
                 task.fingerprint,
                 state="done",
                 result={
+                    "worker_role": getattr(task, "worker_role", role_meta.role_id),
+                    "team": role_meta.team.value,
                     "findings": [f.id for f in discovered_findings],
                     "requests": reqs_used,
                     "duration_ms": round((time.time() - t_start) * 1000, 2),

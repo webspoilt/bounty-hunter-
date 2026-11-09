@@ -137,3 +137,10 @@ class AgentRegistry:
         if task.kind == "verify":
             return self._specialists["verifier"]
         return self._specialists["security_prober"]
+# Expose P8 specialist roles and registry for convenience
+from bb.orchestrator.specialists import (
+    SPECIALIST_ROLES,
+    SpecialistRole,
+    SpecialistWorkerRegistry,
+    TeamType,
+)
