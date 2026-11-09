@@ -52,8 +52,10 @@ class IntelligenceRecord:
     retrieved_at: str                        # Retrieval timestamp (ISO-8601)
     published_at: str | None = None          # Publication date if available
     updated_at: str | None = None            # Modification date if available
-    affected_product: str | None = None      # Target product name
-    affected_component: str | None = None    # Specific component / module / endpoint
+    affected_vendor: str | None = None       # Target vendor name (e.g. apple, atlassian)
+    affected_product: str | None = None      # Target product name (e.g. confluence, ios)
+    affected_component: str | None = None    # Specific component / module / endpoint (e.g. kernel, web_api)
+    attack_surface: str | None = None        # network, web_application, local, local_application, adjacent
     version_constraints: list[VersionConstraint] = field(default_factory=list)
     cwe_ids: list[str] = field(default_factory=list)        # Associated CWE identifiers
     capec_ids: list[str] = field(default_factory=list)      # Associated CAPEC attack patterns
@@ -86,8 +88,10 @@ class IntelligenceRecord:
             retrieved_at=data.get("retrieved_at") or now_iso(),
             published_at=data.get("published_at"),
             updated_at=data.get("updated_at"),
+            affected_vendor=data.get("affected_vendor"),
             affected_product=data.get("affected_product"),
             affected_component=data.get("affected_component"),
+            attack_surface=data.get("attack_surface"),
             version_constraints=vcs,
             cwe_ids=data.get("cwe_ids") or [],
             capec_ids=data.get("capec_ids") or [],

@@ -29,8 +29,10 @@ CREATE TABLE IF NOT EXISTS intelligence_records (
     retrieved_at TEXT NOT NULL,
     published_at TEXT,
     updated_at TEXT,
+    affected_vendor TEXT,
     affected_product TEXT,
     affected_component TEXT,
+    attack_surface TEXT,
     version_constraints TEXT,
     cwe_ids TEXT,
     capec_ids TEXT,
@@ -117,6 +119,13 @@ class IntelligenceStore:
     def _init_schema(self) -> None:
         with self.conn:
             self.conn.executescript(INTELLIGENCE_SCHEMA)
+            # Automatic schema migration for existing databases
+            cursor = self.conn.cursor()
+            cols = [r["name"] for r in cursor.execute("PRAGMA table_info(intelligence_records)").fetchall()]
+            if "affected_vendor" not in cols:
+                cursor.execute("ALTER TABLE intelligence_records ADD COLUMN affected_vendor TEXT")
+            if "attack_surface" not in cols:
+                cursor.execute("ALTER TABLE intelligence_records ADD COLUMN attack_surface TEXT")
 
     def close(self) -> None:
         try:
@@ -146,18 +155,18 @@ class IntelligenceStore:
                     UPDATE intelligence_records SET
                         source=?, source_id=?, source_url=?, title=?, description=?,
                         vuln_class=?, retrieved_at=?, published_at=?, updated_at=?,
-                        affected_product=?, affected_component=?, version_constraints=?,
-                        cwe_ids=?, capec_ids=?, references_json=?, cvss_score=?,
+                        affected_vendor=?, affected_product=?, affected_component=?, attack_surface=?,
+                        version_constraints=?, cwe_ids=?, capec_ids=?, references_json=?, cvss_score=?,
                         severity=?, data_freshness=?, parse_status=?, meta=?
                     WHERE id=?
                     """,
                     (
                         record.source, record.source_id, record.source_url, record.title,
                         record.description, record.vuln_class, record.retrieved_at,
-                        record.published_at, record.updated_at, record.affected_product,
-                        record.affected_component, vcs_json, cwes_json, capecs_json,
-                        refs_json, record.cvss_score, record.severity, freshness,
-                        record.parse_status, meta_json, record.id,
+                        record.published_at, record.updated_at, record.affected_vendor,
+                        record.affected_product, record.affected_component, record.attack_surface,
+                        vcs_json, cwes_json, capecs_json, refs_json, record.cvss_score,
+                        record.severity, freshness, record.parse_status, meta_json, record.id,
                     ),
                 )
                 # Re-index FTS cleanly
@@ -174,18 +183,18 @@ class IntelligenceStore:
                     """
                     INSERT INTO intelligence_records (
                         id, source, source_id, source_url, title, description, vuln_class,
-                        retrieved_at, published_at, updated_at, affected_product, affected_component,
-                        version_constraints, cwe_ids, capec_ids, references_json, cvss_score,
-                        severity, data_freshness, parse_status, meta
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        retrieved_at, published_at, updated_at, affected_vendor, affected_product,
+                        affected_component, attack_surface, version_constraints, cwe_ids, capec_ids,
+                        references_json, cvss_score, severity, data_freshness, parse_status, meta
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id, record.source, record.source_id, record.source_url, record.title,
                         record.description, record.vuln_class, record.retrieved_at,
-                        record.published_at, record.updated_at, record.affected_product,
-                        record.affected_component, vcs_json, cwes_json, capecs_json,
-                        refs_json, record.cvss_score, record.severity, freshness,
-                        record.parse_status, meta_json,
+                        record.published_at, record.updated_at, record.affected_vendor,
+                        record.affected_product, record.affected_component, record.attack_surface,
+                        vcs_json, cwes_json, capecs_json, refs_json, record.cvss_score,
+                        record.severity, freshness, record.parse_status, meta_json,
                     ),
                 )
                 rowid = cursor.lastrowid
@@ -225,8 +234,10 @@ class IntelligenceStore:
             retrieved_at=row["retrieved_at"],
             published_at=row["published_at"],
             updated_at=row["updated_at"],
+            affected_vendor=row["affected_vendor"] if "affected_vendor" in row.keys() else None,
             affected_product=row["affected_product"],
             affected_component=row["affected_component"],
+            attack_surface=row["attack_surface"] if "attack_surface" in row.keys() else None,
             version_constraints=vcs,
             cwe_ids=cwes,
             capec_ids=capecs,

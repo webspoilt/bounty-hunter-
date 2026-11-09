@@ -97,6 +97,7 @@ class NvdCveAdapter:
 
         # Configurations & Version Constraints
         version_constraints: list[VersionConstraint] = []
+        affected_vendor = None
         affected_product = None
         affected_component = None
 
@@ -109,6 +110,8 @@ class NvdCveAdapter:
                     cpe23 = match.get("criteria", "")
                     # Extract vendor/product from cpe:2.3:a:vendor:product:version:...
                     parts = cpe23.split(":")
+                    if len(parts) > 3 and not affected_vendor:
+                        affected_vendor = parts[3]
                     if len(parts) > 4 and not affected_product:
                         affected_product = parts[4]
                     if len(parts) > 5 and parts[5] != "*":
@@ -155,6 +158,14 @@ class NvdCveAdapter:
         if not description or not affected_product:
             parse_status = "incomplete"
 
+        # Attack surface detection from CVSS / description
+        attack_surface = "web_application"
+        desc_low = description.lower()
+        if any(k in desc_low for k in ("kernel", "privilege escalation", "local application", "driver", "system call")):
+            attack_surface = "local"
+        elif any(k in desc_low for k in ("network", "remote code execution", "http", "api", "web")):
+            attack_surface = "network"
+
         return IntelligenceRecord(
             id=cve_id,
             source="nvd",
@@ -166,8 +177,10 @@ class NvdCveAdapter:
             retrieved_at=now_iso(),
             published_at=published_at,
             updated_at=updated_at,
+            affected_vendor=affected_vendor,
             affected_product=affected_product,
             affected_component=affected_component,
+            attack_surface=attack_surface,
             version_constraints=version_constraints,
             cwe_ids=cwes,
             references=refs[:15],
