@@ -41,13 +41,15 @@ class Ollama:
 
     def chat(self, messages: list[dict], *, model: str | None = None,
              temperature: float = 0.2, timeout: float | None = None,
-             num_ctx: int = 8192) -> str:
+             num_ctx: int = 8192, keep_alive: str | None = None) -> str:
         payload = {
             "model": model or self.chat_model,
             "stream": False,
             "messages": messages,
             "options": {"temperature": temperature, "num_ctx": num_ctx},
         }
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
         last_err: Exception | None = None
         for _ in range(2):
             try:

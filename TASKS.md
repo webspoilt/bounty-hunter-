@@ -40,6 +40,29 @@ documented. Check convention: `[ ]` planned, `[*]` in progress, `[x]` done.
   - [x] CLI & AutoHunter integration: `bb controller run/status/pause/resume/abort` and `bb auto --controller` (default).
   - [x] Regression tests (`tests/test_controller.py`): 15 comprehensive tests covering all 12 required test conditions. Full suite **225/225 pass**.
 
+- [x] **P3 — Coding Agent Handoff to Local Ollama Qwen Coder 8B** (2026-11-09)
+  - [x] Model hierarchy & interface separation: Cloud primary (Codex/Antigravity) -> Local fallback (Qwen Coder 8B via Ollama) -> Decision gateway (Tev1 0.8B via `/v1/systemone`). Strict separation between Tev1 structured choices and Qwen code generation.
+  - [x] Truthful provider status: Zero invented quota APIs; honest manual switching via CLI.
+  - [x] Persistent task manifest (`bb/coder/manifest.py`): 11 fields (`task_id`, `objective`, `current_provider`, `branch`, `worktree`, `last_known_commit`, `files_changed`, `acceptance_criteria`, `tests_run`, `test_results`, `unfinished_tasks`, `known_issues`, `next_action`), non-destructive Git inspection (`git rev-parse`, `git status --porcelain`, `git diff`), branch mismatch detection, and task resumption.
+  - [x] Single-writer worktree lock (`bb/coder/provider.py`): Platform-safe Windows PID inspection using Win32 `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION`, `GetExitCodeProcess`, and `CloseHandle` (never destructive `os.kill(pid, 0)`). POSIX `os.kill` with strict `ESRCH`/`EPERM` distinction. `_WORKTREE_LOCK_MUTEX` thread-safety and multi-process lock conflict rejection.
+  - [x] Qwen Coder Adapter (`bb/coder/adapter.py`): Model tag validation (`resolve_model(validate=True)`), concurrency guard (`_CODER_SEMAPHORE = BoundedSemaphore(1)`), `keep_alive` residency parameter, inspection-first workflow, unified diff generation, and self-review step.
+  - [x] CLI commands (`bb handoff {status,create,switch,update,plan,lock}`).
+  - [x] Operator documentation (`docs/CODING_AGENT_HANDOFF.md`): Full 11-step handoff protocol, lock mechanics, and recovery runbook.
+  - [x] Regression tests: 33 tests in `tests/test_handoff.py` covering all 10 required handoff conditions. Full suite **258/258 pass**.
+
+- [x] **P4 — Autonomous Two-Account Authorization Investigation** (2026-11-09)
+  - [x] Typed application model & provenance (`bb/authz/model.py`): Role, Identity, Endpoint, Parameter, ObjectRef, Workflow, ScenarioSpec, EvidenceRef, Hypothesis; explicit observed/operator-confirmed/inferred labels.
+  - [x] Traffic ingestion & inventory: scoped HAR ingestion (`bb/har.py`), credential redaction (`bb/redact.py`), endpoint and object identifier clustering.
+  - [x] Two-account investigation & hypothesis generation (`bb/authz/hypothesis.py`): Account A (owner/creator) vs Account B (non-owner/attacker) differential hypotheses for unauthorized reads, write mutations, and tenant-crossing.
+  - [x] Tev1 advisory ranking: compact redacted candidate context without credentials or raw HAR; strictly validated options with deterministic fallback.
+  - [x] Policy enforcement & safety: ScopedClient with host/path/IP/anti-rebinding guards, shared request budget (RequestBudget), kill switch integration (`bb/killswitch.py`).
+  - [x] Mandatory human approval gate: safe reads execute automatically; state-changing write operations strictly require operator approval (`--allow-write` or `--approve-ops`).
+  - [x] Independent adversarial verifier (`bb/authz/verifier.py`): HTTP 200 alone never proof; challenged against public/shared objects, static wildcard routes, soft 404s, missing identity markers, baseline dissimilarity, and owner readbacks.
+  - [x] Resumable workflow & checkpoints (`bb/authz/workflow.py`): checkpoints in `data/authz_checkpoints/`, duplicate execution prevention, reproducible report generation queued in human approval gate (`bb/gate.py`).
+  - [x] CLI commands (`bb authz plan`, `bb authz run`, `bb authz status`).
+  - [x] Operator documentation (`docs/AUTONOMOUS_AUTHORIZATION_INVESTIGATION.md`).
+  - [x] Automated test suite: 15 comprehensive tests in `tests/test_authz_workflow.py`. Full suite **273/273 pass**.
+
 ## Backlog (planned milestones, smallest first)
 
 - [ ] **M2 — Tev1 at the verification gate** (`bb/verify.py`): structured

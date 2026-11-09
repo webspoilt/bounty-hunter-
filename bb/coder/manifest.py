@@ -79,6 +79,8 @@ class TaskManifest:
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 cwd=cwd,
                 timeout=5.0,
@@ -94,6 +96,8 @@ class TaskManifest:
                 ["git", "rev-parse", "--show-toplevel"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 cwd=cwd,
                 timeout=5.0,
@@ -111,6 +115,8 @@ class TaskManifest:
                 ["git", "rev-parse", "HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 cwd=cwd,
                 timeout=5.0,
@@ -126,6 +132,8 @@ class TaskManifest:
                 ["git", "status", "--porcelain"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 cwd=cwd,
                 timeout=5.0,
@@ -142,6 +150,8 @@ class TaskManifest:
                 ["git", "diff", "--stat"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 cwd=cwd,
                 timeout=5.0,
@@ -157,6 +167,8 @@ class TaskManifest:
                 ["git", "diff"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
                 cwd=cwd,
                 timeout=10.0,
@@ -171,8 +183,31 @@ class TaskManifest:
 
         self.updated_at = now_iso()
 
-    def validate(self) -> list[str]:
-        """Check essential fields are present."""
+    def check_branch_match(self, repo_dir: Path | str | None = None) -> bool:
+        """Verify that current working tree branch matches the manifest branch."""
+        if not self.branch:
+            return True
+        cwd = Path(repo_dir) if repo_dir else ROOT
+        try:
+            r = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                cwd=cwd,
+                timeout=5.0,
+            )
+            if r.returncode == 0:
+                current = r.stdout.strip()
+                return current == self.branch
+        except Exception:
+            pass
+        return True
+
+    def validate(self, check_branch: bool = False, repo_dir: Path | str | None = None) -> list[str]:
+        """Check essential fields are present and optionally verify branch alignment."""
         errors: list[str] = []
         if not self.task_id.strip():
             errors.append("Missing task_id")
@@ -180,4 +215,18 @@ class TaskManifest:
             errors.append("Missing objective")
         if not self.current_provider.strip():
             errors.append("Missing current_provider")
+        if check_branch and self.branch and not self.check_branch_match(repo_dir):
+            errors.append(f"Branch mismatch: manifest recorded on '{self.branch}', but repository is on a different branch")
         return errors
+
+    def resume_task(self, next_action: str = "", new_criteria: list[str] | None = None) -> None:
+        """Resume an in-progress task and refresh read-only git context."""
+        self.refresh_git_status()
+        if next_action:
+            self.next_action = next_action
+        if new_criteria:
+            for c in new_criteria:
+                if c not in self.acceptance_criteria:
+                    self.acceptance_criteria.append(c)
+        self.updated_at = now_iso()
+        self.save()
