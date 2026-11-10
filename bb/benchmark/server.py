@@ -191,6 +191,63 @@ class BenchmarkAppHandler(BaseHTTPRequestHandler):
             self._send_text(200, "PNG_BINARY_BYTES", headers={"Content-Type": "image/png"})
             return
 
+
+        # Held-out cases support
+        if path == "/api/v1/users/user_alice_01/preferences":
+            self._send_json(200, {"user_id": "user_alice_01", "email": "alice@example.com", "preferences": {"theme": "dark", "locale": "en"}})
+            return
+
+        if path == "/api/v1/payment_methods/doc_alice_99":
+            if "role_b" in auth_header or "bob" in auth_header.lower():
+                self._send_json(403, {"error": "Forbidden: Access Denied to payment methods"})
+                return
+            self._send_json(200, {"card_last4": "4242", "brand": "visa"})
+            return
+
+        if path == "/api/v1/debug/health":
+            self._send_json(200, {"debug_mode": True, "server_uptime": "99.9%", "env": "staging"})
+            return
+
+        if path == "/api/v1/admin/audit":
+            if not auth_header or "admin" not in auth_header.lower():
+                self._send_json(401, {"error": "Unauthorized: Authentication required"})
+                return
+            self._send_json(200, {"audit_events": []})
+            return
+
+        if path == "/package.json":
+            self._send_json(200, {"name": "benchmark-app", "dependencies": {"express": "4.17.1", "lodash": "4.17.20"}})
+            return
+
+        if path == "/api/v1/secure/server.key":
+            self._send_text(404, "Not Found")
+            return
+
+        if path == "/api/v1/products":
+            qs = parse_qs(parts.query)
+            cat = qs.get("category", [""])[0]
+            if "'" in cat or "--" in cat or "OR 1=1" in cat:
+                self._send_json(200, {"error": "SQL syntax error near '' OR 1=1--': sqlite_master query failed", "category": cat})
+                return
+            self._send_json(200, {"products": ["item A", "item B"]})
+            return
+
+        if path == "/api/v1/user/profile_settings":
+            if origin_header:
+                headers = {"Access-Control-Allow-Origin": origin_header, "Access-Control-Allow-Credentials": "true"}
+                self._send_json(200, {"settings": "ok"}, headers=headers)
+                return
+            self._send_json(200, {"settings": "ok"})
+            return
+
+        if path == "/api/v1/organizations/public_members":
+            self._send_json(200, {"public_roster": True, "members": ["Bob", "Carol"]})
+            return
+
+        if path == "/api/v1/rate_limited_endpoint":
+            self._send_text(429, "Too Many Requests: rate limit exceeded, retry later")
+            return
+
         # Default fallback
         self._send_json(404, {"error": f"Endpoint {path} not found"})
 
