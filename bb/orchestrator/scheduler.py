@@ -45,9 +45,26 @@ class Scheduler:
         """Extend the lease timestamp for an in-flight running task."""
         return self.store.task_renew(task_fingerprint)
 
+    def record_policy_refusal(self, task: Task, reason: str,
+                              is_terminal: bool = True) -> None:
+        """Record policy or scope refusal for a task with appropriate terminal or retry state.
+
+        If terminal (e.g. out of scope, unresolvable host, NXDOMAIN), records as 'blocked'
+        to avoid infinite re-planning loops. If transient, marks as 'skipped'.
+        """
+        state = "blocked" if is_terminal else "skipped"
+        from bb.config import now_iso
+        now = now_iso()
+        self.store.conn.execute(
+            "INSERT OR IGNORE INTO tasks (id, run_id, kind, target, fingerprint, state, "
+            "attempts, created_at, updated_at) VALUES (?,?,?,?,?, 'pending', 0, ?, ?)",
+            (task.fingerprint, self.run_id, task.kind, task.target[:2000], task.fingerprint, now, now)
+        )
+        self.store.task_finish(task.fingerprint, state=state, result={"refusal": reason})
+
     def finish_task(self, task_fingerprint: str, state: str = "done",
                     result: dict[str, Any] | None = None) -> None:
-        """Mark a claimed task as completed (done, failed, or skipped)."""
+        """Mark a claimed task as completed (done, failed, skipped, or blocked)."""
         self.store.task_finish(task_fingerprint, state=state, result=result or {})
 
     def recover_expired_leases(self, all_runs: bool = True) -> int:

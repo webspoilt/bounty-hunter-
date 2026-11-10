@@ -380,7 +380,10 @@ class Controller:
             )
             if not allowed:
                 self.log(f"[!] Task policy refused: {reason}")
-                self.scheduler.finish_task(selected_task.fingerprint, state="skipped", result={"refusal": reason})
+                # Classify refusal: DNS/host resolution failures and scope denials are terminal
+                # for this task, preventing infinite re-planning loops.
+                is_terminal = "out of scope" in reason or "DNS resolution failed" in reason or "not in scope" in reason
+                self.scheduler.record_policy_refusal(selected_task, reason, is_terminal=is_terminal)
                 self.lifecycle.transition_to(State.PLANNING, reason="policy_refusal")
                 return {"status": "refused", "reason": reason}
 
