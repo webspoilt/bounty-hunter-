@@ -37,7 +37,9 @@ class RequestBudget:
 
     def __init__(self, rate: float = DEFAULT_RATE, max_requests: int | None = None,
                  deadline: float | None = None):
-        self.rate = max(float(rate), 0.1)
+        # Platform safety floor: Rate ceiling of 10.0 req/sec to prevent DoS (COC-UNSAFE-002)
+        rate = min(float(rate), 10.0)
+        self.rate = max(rate, 0.1)
         self.max_requests = max_requests
         self.deadline = deadline
         self._used = 0
@@ -76,7 +78,8 @@ class ScopedClient:
                  shared: RequestBudget | None = None):
         self.scope = scope
         self.base_url = base_url
-        self.rate = max(rate, 0.1)
+        # Enforce platform ceiling (10 req/sec) to adhere to HackerOne CoC unsafe testing rules
+        self.rate = min(max(rate, 0.1), 10.0)
         self.max_requests = max_requests
         self.deadline = deadline
         self.shared = shared            # when set, count/deadline/pacing are collective

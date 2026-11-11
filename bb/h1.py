@@ -16,6 +16,7 @@ Phase 2 - 10 implementation & repair:
 from __future__ import annotations
 
 import base64
+import enum
 import hashlib
 import json
 import logging
@@ -272,33 +273,58 @@ class H1Client:
 # PHASE 4 & 5: PROGRAM DISCOVERY AND RANKING
 # ---------------------------------------------------------------------------
 
+class ScopeRetrievalStatus(str, enum.Enum):
+    NOT_LOADED = "NOT_LOADED"
+    LOADED_EMPTY = "LOADED_EMPTY"
+    LOADED_WITH_ASSETS = "LOADED_WITH_ASSETS"
+    FETCH_FAILED = "FETCH_FAILED"
+    PARTIALLY_LOADED = "PARTIALLY_LOADED"
+
+
 @dataclass
 class RankedProgram:
     handle: str
     name: str
     offers_bounties: bool
     submission_state: str
-    bounty_score: float
-    asset_count: int
+    bounty_score: Optional[float]  # None if scope unpopulated (INSUFFICIENT DATA)
+    asset_count: Optional[int]    # None if scope not loaded
     web_asset_count: int
     wildcard_count: int
     max_severity: str
     open_scope: bool
     state: str
     rating: float
-    assets_loaded: bool = False
+    scope_status: ScopeRetrievalStatus = ScopeRetrievalStatus.NOT_LOADED
     reasons: list[str] = field(default_factory=list)
     raw_attributes: dict[str, Any] = field(default_factory=dict)
+    reward_range: str = "NOT RETRIEVED"
+
+    @property
+    def assets_loaded(self) -> bool:
+        return self.scope_status in (ScopeRetrievalStatus.LOADED_EMPTY, ScopeRetrievalStatus.LOADED_WITH_ASSETS)
 
     def summary(self) -> str:
         bounty_str = "💰 BOUNTY" if self.offers_bounties else "FREE / VDP"
-        if not self.assets_loaded:
-            assets_str = "Assets: Not loaded in list view"
+        rewards_str = f"Reward: {self.reward_range}"
+        
+        if self.scope_status == ScopeRetrievalStatus.NOT_LOADED:
+            assets_str = "Scope: NOT LOADED | Assets: UNKNOWN"
+        elif self.scope_status == ScopeRetrievalStatus.FETCH_FAILED:
+            assets_str = "Scope: FETCH FAILED | Assets: UNKNOWN"
+        elif self.scope_status == ScopeRetrievalStatus.LOADED_EMPTY:
+            assets_str = "Scope: LOADED | Assets: 0 (No structured scope)"
         else:
-            assets_str = f"Assets: {self.asset_count:2d} (Web: {self.web_asset_count:2d}, Wildcards: {self.wildcard_count:2d})"
+            assets_str = f"Scope: LOADED | Assets: {self.asset_count:2d} (Web: {self.web_asset_count:2d}, Wildcards: {self.wildcard_count:2d})"
+
+        if self.bounty_score is None:
+            score_str = "[INSUFFICIENT DATA]"
+        else:
+            score_str = f"[{self.bounty_score:4.1f}]"
+
         return (
-            f"[{self.bounty_score:4.1f}] {self.handle:<24} {bounty_str:<11} "
-            f"{assets_str:<32} State: {self.submission_state}"
+            f"{score_str:<19} {self.handle:<22} {bounty_str:<10} {rewards_str:<26} "
+            f"{assets_str:<45} State: {self.submission_state}"
         )
 
 
@@ -312,7 +338,11 @@ class ProgramDiscoveryRanker:
     4. Program rating / reputation (+0 to +10 pts)
     5. Maximum reported severity (Critical = +10, High = +5)
     
-    Safety Invariant: Ranking is purely advisory; ranking high never grants testing authorization.
+    Safety Invariants:
+    - Never defaults missing scope or assets to 0; marks scope_status as NOT_LOADED and asset_count as None.
+    - If scope is not loaded, opportunity score is marked INSUFFICIENT DATA (None).
+    - Never fabricates bounty reward amounts: defaults to 'NOT RETRIEVED'.
+    - Ranking is purely advisory; ranking high never grants testing authorization.
     """
 
     @staticmethod
@@ -326,18 +356,28 @@ class ProgramDiscoveryRanker:
         open_scope = bool(attrs.get("open_scope"))
         rating = float(attrs.get("rating") or 0.0)
 
-        # Count structured scopes if present in relationships
+        # Inspect relationships for structured_scopes
         rel = (prog.get("relationships") or {}).get("structured_scopes") or {}
         scope_data = rel.get("data")
-        assets_loaded = scope_data is not None
-        scope_data = scope_data or []
+        
+        if scope_data is None:
+            scope_status = ScopeRetrievalStatus.NOT_LOADED
+            asset_count = None
+            scope_items = []
+        elif len(scope_data) == 0:
+            scope_status = ScopeRetrievalStatus.LOADED_EMPTY
+            asset_count = 0
+            scope_items = []
+        else:
+            scope_status = ScopeRetrievalStatus.LOADED_WITH_ASSETS
+            asset_count = len(scope_data)
+            scope_items = scope_data
 
-        asset_count = len(scope_data)
         web_count = 0
         wildcard_count = 0
         max_sev = "medium"
 
-        for s in scope_data:
+        for s in scope_items:
             s_attrs = s.get("attributes", {})
             atype = (s_attrs.get("asset_type") or "").upper()
             if atype in ("URL", "API", "DOMAIN"):
@@ -351,53 +391,61 @@ class ProgramDiscoveryRanker:
             elif sev == "high" and max_sev != "critical":
                 max_sev = "high"
 
-        # Calculate score
-        score = 0.0
+        # Calculate score and transparent reasons
         reasons = []
 
-        if offers_bounties:
-            score += 40.0
-            reasons.append("Offers cash bounties (+40)")
+        # If scope is not loaded, we do not assign an arbitrary synthetic score
+        if scope_status == ScopeRetrievalStatus.NOT_LOADED:
+            reasons.append("Scope not retrieved in list view: score is INSUFFICIENT DATA (inspect with `bb h1 brief`)")
+            if offers_bounties:
+                reasons.append("Bounty flag: YES (Reward range NOT RETRIEVED)")
+            else:
+                reasons.append("Bounty flag: NO / VDP")
+            score = None
         else:
-            reasons.append("VDP / points only (+0)")
+            score = 0.0
+            if offers_bounties:
+                score += 40.0
+                reasons.append("Offers cash bounties (+40.0)")
+            else:
+                reasons.append("VDP / points only (+0.0)")
 
-        if sub_state == "open":
-            score += 15.0
-            reasons.append("Submissions currently open (+15)")
-        elif sub_state == "paused":
-            score -= 50.0
-            reasons.append("Submissions paused (-50)")
-        elif sub_state == "closed":
-            score -= 100.0
-            reasons.append("Program closed (-100)")
+            if sub_state == "open":
+                score += 15.0
+                reasons.append("Submissions currently open (+15.0)")
+            elif sub_state == "paused":
+                score -= 50.0
+                reasons.append("Submissions paused (-50.0)")
+            elif sub_state == "closed":
+                score -= 100.0
+                reasons.append("Program closed (-100.0)")
 
-        # Web attack surface
-        if assets_loaded:
+            # Web attack surface
             surface_pts = min(web_count * 4.0 + wildcard_count * 6.0, 30.0)
             score += surface_pts
             if surface_pts > 0:
                 reasons.append(f"Web/API attack surface: {web_count} web targets (+{surface_pts:.1f})")
             if max_sev == "critical":
                 score += 10.0
-                reasons.append("Accepts critical findings (+10)")
+                reasons.append("Accepts critical findings (+10.0)")
             elif max_sev == "high":
                 score += 5.0
-                reasons.append("Accepts high findings (+5)")
-        else:
-            reasons.append("Assets not loaded in list view (inspect with `bb h1 brief`)")
+                reasons.append("Accepts high findings (+5.0)")
 
-        # Program rating (0.0 to 5.0 -> up to +10 pts)
-        if rating > 0:
-            rating_pts = min(rating * 2.0, 10.0)
-            score += rating_pts
-            reasons.append(f"Program rating {rating:.1f}/5.0 (+{rating_pts:.1f})")
+            # Program rating (0.0 to 5.0 -> up to +10 pts)
+            if rating > 0:
+                rating_pts = min(rating * 2.0, 10.0)
+                score += rating_pts
+                reasons.append(f"Program rating {rating:.1f}/5.0 (+{rating_pts:.1f})")
+
+            score = round(max(score, 0.0), 1)
 
         return RankedProgram(
             handle=handle,
             name=name,
             offers_bounties=offers_bounties,
             submission_state=sub_state,
-            bounty_score=round(max(score, 0.0), 1),
+            bounty_score=score,
             asset_count=asset_count,
             web_asset_count=web_count,
             wildcard_count=wildcard_count,
@@ -405,15 +453,24 @@ class ProgramDiscoveryRanker:
             open_scope=open_scope,
             state=state,
             rating=rating,
-            assets_loaded=assets_loaded,
+            scope_status=scope_status,
             reasons=reasons,
             raw_attributes=attrs,
+            reward_range="NOT RETRIEVED",
         )
 
     @classmethod
     def rank_programs(cls, raw_programs: list[dict]) -> list[RankedProgram]:
         ranked = [cls.score_program(p) for p in raw_programs]
-        ranked.sort(key=lambda r: (r.bounty_score, r.offers_bounties), reverse=True)
+        # Sort programs with scores first, then by bounty flag and rating
+        ranked.sort(
+            key=lambda r: (
+                r.bounty_score if r.bounty_score is not None else -1.0,
+                r.offers_bounties,
+                r.rating
+            ),
+            reverse=True,
+        )
         return ranked
 
 

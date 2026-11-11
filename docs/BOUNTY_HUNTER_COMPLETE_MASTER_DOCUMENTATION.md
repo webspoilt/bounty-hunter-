@@ -3242,13 +3242,58 @@ Implemented in `bb.h1.HackerOneReportGenerator` and CLI `bb h1 report`:
 | `tests/test_h1.py` | 6 | Basic credentials, submit payload shape, printed curl, structured scope parsing |
 | `tests/test_h1_pipeline.py` | 9 | Credential missing, host restriction, pagination, 429 retry, multi-factor ranking, policy parsing, brief card generation, target scope enforcement, report draft preparation |
 | `tests/test_h1_repair.py` | 5 | `asdict` serialization, safe filename sanitization, honest asset display when not loaded, rating-based ranking scoring, empty & populated asset inventories |
-| **Total Pipeline Pass** | **20 passed** | **Zero failures, zero regressions across 361 total project tests** |
+| `tests/test_h1_policy.py` | 8 | Platform rules knowledge base, rate ceiling caps, prohibited attack blocking, write approval gates, report quality gates, PII redaction |
+| **Total Pipeline Pass** | **28 passed** | **Zero failures, zero regressions across 371 total project tests** |
 
 ---
 
-## 20. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT
+## 20. HACKERONE POLICY COMPLIANCE ENGINE & REWARD/SCOPE DATA ARCHITECTURE
 
-### 20.1 Master Completeness Matrix
+### 20.1 Official HackerOne Policy Documents & Local Preservation
+
+Bounty Hunter permanently anchors and enforces the two foundational HackerOne platform policies:
+1. **Vulnerability Disclosure Guidelines (VDG, v1.3 July 27, 2026)**:
+   - Official URL: `https://www.hackerone.com/terms/disclosure-guidelines`
+   - SHA-256 Fingerprint: `711f7747ead5622e1346887f1979e85b3a726393fc0a8f4759b5a8bec0b8df10`
+   - Local Anchors: `data/h1/policies/disclosure-guidelines_raw.html`, `disclosure-guidelines_clean.txt`
+2. **Code of Conduct (CoC, Standing Terms)**:
+   - Official URL: `https://www.hackerone.com/policies/code-of-conduct`
+   - SHA-256 Fingerprint: `f4c38dbbb6eb5527c251a3a550db388e697dcaca33169352cd5be26d562f33e1`
+   - Local Anchors: `data/h1/policies/code-of-conduct_raw.html`, `code-of-conduct_clean.txt`
+
+### 20.2 Formalized Rule Classifications & Precedence Order
+
+Implemented in `bb.h1_policy`:
+- **RFC 2119 Enums**: `MUST`, `MUST_NOT`, `SHOULD`, `SHOULD_NOT`, `MAY`, `REQUIRES_EXPLICIT_AUTHORIZATION`, `REQUIRES_HUMAN_REVIEW`.
+- **Precedence Hierarchy**:
+  1. *Universal Platform Floor (CoC)*: Platform-wide rules (DoS prohibition, extortion bans, single researcher account, human accountability for AI) cannot be waived by any customer program.
+  2. *Program-Specific Policy*: Explicit program terms supersede standard Vulnerability Disclosure Guidelines in event of conflict (e.g. customized disclosure timelines, specific testing authorizations, custom header requirements).
+  3. *Default Platform Baseline (VDG)*: Standard coordinated disclosure terms govern unless program policy states otherwise.
+
+### 20.3 Hackbot & AI-Assisted Research Standards
+
+Directly enforces HackerOne Code of Conduct clauses (Lines 53–116):
+- **Human-in-the-Loop (`COC-AI-001`)**: Hackbots and AI agents must not operate autonomously; a human expert must investigate, validate, and confirm findings before submission. Bounty Hunter strictly prohibits automated report submission.
+- **Operator Accountability (`COC-AI-002`)**: Operators remain legally and operationally accountable for all traffic generated and submissions drafted.
+- **Quality Over Quantity (`COC-AI-003`, `COC-AI-004`)**: Generative spam and mass low-signal reports are blocked at the source. Unverified claims and hallucinated endpoints are blocked by compliance gates.
+- **Unsafe Testing Floor (`COC-UNSAFE-001` - `005`)**: Strict programmatic ceiling on request rates ($\le 10.0\text{ req/s}$), absolute blocking of DoS/DDoS, spam, and social engineering, and mandatory human authorization for state-changing HTTP methods (`POST`, `PUT`, `PATCH`, `DELETE`).
+
+### 20.4 Honest Scope Retrieval States & Reward Range Separation
+
+Resolved misleading listings in `bb h1 programs`:
+- **Bounty Eligibility vs. Reward Range**: `offers_bounties` (Boolean indicator) is kept distinct from actual payout ranges. If reward ranges are not returned in the API list view, they are explicitly displayed as `Reward: NOT RETRIEVED` rather than falsely showing `$0`.
+- **Scope Status Enum (`ScopeRetrievalStatus`)**:
+  - `NOT_LOADED`: Structured scopes not yet retrieved (list view); asset count displays `UNKNOWN`, score displays `[INSUFFICIENT DATA]`.
+  - `LOADED_EMPTY`: Program has zero assets in structured scope; asset count displays `0`.
+  - `LOADED_WITH_ASSETS`: Scopes successfully parsed; exact web target and wildcard count displayed.
+  - `FETCH_FAILED`: Network or permission error retrieving structured scopes.
+- **Transparent Opportunity Scoring**: Replaced arbitrary 55.0 defaults with transparent scoring breakdown reasons. Programs with unpopulated scopes are clearly marked `INSUFFICIENT DATA` until inspected with `bb h1 brief`.
+
+---
+
+## 21. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT
+
+### 21.1 Master Completeness Matrix
 
 | Documentation Section | Status | Verification Evidence |
 | :--- | :--- | :--- |

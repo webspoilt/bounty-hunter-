@@ -97,9 +97,9 @@ def test_program_ranking_honest_asset_display_when_not_loaded():
     scored = ProgramDiscoveryRanker.score_program(raw_listing_item)
     assert scored.handle == "greenhouse"
     assert scored.assets_loaded is False
-    assert "Assets: Not loaded in list view" in scored.summary()
-    assert scored.bounty_score == 40.0 + 15.0 + (4.5 * 2.0)  # 40 (bounty) + 15 (open) + 9 (rating) = 64.0
-    assert any("Assets not loaded" in r for r in scored.reasons)
+    assert "Assets: UNKNOWN" in scored.summary() or "Scope: NOT LOADED" in scored.summary()
+    assert scored.bounty_score is None  # Score is INSUFFICIENT DATA when scope not loaded
+    assert any("INSUFFICIENT DATA" in r for r in scored.reasons)
 
 
 def test_program_ranking_with_loaded_assets():

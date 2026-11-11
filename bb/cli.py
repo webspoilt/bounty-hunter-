@@ -915,6 +915,20 @@ def cmd_h1(args) -> int:
                 recommended_first_target=finding.url or "",
             )
 
+        # HackerOne Policy Compliance Audit Gate before drafting
+        from bb.h1_policy import PolicyComplianceEngine, format_compliance_report
+        comp_res = PolicyComplianceEngine.validate_finding_for_submission(
+            finding=finding,
+            program_handle=handle,
+            is_private=not brief.offers_bounties,
+            ai_generated=bool(finding.meta.get("ai_generated") or finding.meta.get("hypothesis_id")),
+        )
+        print("\n" + format_compliance_report(comp_res))
+        if not comp_res.compliant:
+            print("\n[!] REPORT DRAFT BLOCKED: Finding violates HackerOne platform policy standards.")
+            print("[!] Resolve the blocking violations above before generating a submission draft.")
+            return 1
+
         draft = HackerOneReportGenerator.prepare_draft(finding, brief)
         safe_id = sanitize_handle(finding.id[:12])
         out_json = H1_REPORTS_DIR / f"h1_report_{safe_id}.json"
