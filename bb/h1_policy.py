@@ -42,14 +42,113 @@ from bb.models import Finding
 
 log = logging.getLogger(__name__)
 
-# Document hashes anchoring the official policy versions
+# Document metadata anchoring the official policy versions
 VDG_URL = "https://www.hackerone.com/terms/disclosure-guidelines"
+VDG_FINAL_URL = "https://www.hackerone.com/terms/disclosure-guidelines"
 VDG_VERSION = "1.3 (July 27, 2026)"
 VDG_SHA256 = "711f7747ead5622e1346887f1979e85b3a726393fc0a8f4759b5a8bec0b8df10"
+VDG_RETRIEVED_AT = "2026-11-11T12:09:00Z"
 
 COC_URL = "https://www.hackerone.com/policies/code-of-conduct"
+COC_FINAL_URL = "https://www.hackerone.com/policies/code-of-conduct"
 COC_VERSION = "Standing Terms"
 COC_SHA256 = "f4c38dbbb6eb5527c251a3a550db388e697dcaca33169352cd5be26d562f33e1"
+COC_RETRIEVED_AT = "2026-11-11T12:09:00Z"
+
+
+@dataclass(frozen=True)
+class PolicyDocumentMetadata:
+    name: str
+    original_url: str
+    final_url: str
+    version: str
+    sha256: str
+    retrieved_at: str
+    headings: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+VDG_METADATA = PolicyDocumentMetadata(
+    name="Vulnerability Disclosure Guidelines",
+    original_url=VDG_URL,
+    final_url=VDG_FINAL_URL,
+    version=VDG_VERSION,
+    sha256=VDG_SHA256,
+    retrieved_at=VDG_RETRIEVED_AT,
+    headings=(
+        "Vulnerability Disclosure Standards",
+        "Program Participation & Submission Process",
+        "Vulnerability Disclosure Process",
+        "Disclosure Setting - Default",
+        "Disclosure Setting - Mutual Agreement",
+        "Last Resort",
+        "Disclosure Setting - Disabled",
+        "Private Program",
+        "Public Recognition",
+        "Bug Bounty",
+        "Definitions",
+        "Contact",
+        "Changes to These Guidelines",
+    ),
+)
+
+COC_METADATA = PolicyDocumentMetadata(
+    name="Code of Conduct",
+    original_url=COC_URL,
+    final_url=COC_FINAL_URL,
+    version=COC_VERSION,
+    sha256=COC_SHA256,
+    retrieved_at=COC_RETRIEVED_AT,
+    headings=(
+        "Code of Conduct",
+        "Unprofessional Behavior",
+        "Abusive Conduct/Harassment",
+        "Ethical Working Practices",
+        "Unlawful or obscene content",
+        "Service Degradation/Unsafe Testing",
+        "Hackbots: By the Rules, Human-in-the-Loop, Bounty Eligible, Accountable",
+        "AI-assisted Research & Submission Standards",
+        "High-quality submissions",
+        "Submissions closed as Not Applicable",
+        "Uncoordinated Vulnerability Disclosure",
+        "Private Programs",
+        "Third-Party Assets",
+        "Contacting Program Team Out-of-Band",
+        "Reputation Farming/Duplicate Account Abuse",
+        "Misuse of Intellectual Property",
+        "Social Engineering",
+        "Use of tools",
+        "Extortion/Blackmail",
+        "Circumventing a Ban",
+        "Enforcement Actions",
+    ),
+)
+
+
+@dataclass
+class GlobalH1PolicyProfile:
+    """Consolidated Global HackerOne Policy Compliance Profile."""
+    vdg: PolicyDocumentMetadata = field(default_factory=lambda: VDG_METADATA)
+    coc: PolicyDocumentMetadata = field(default_factory=lambda: COC_METADATA)
+    active_rules: list[PolicyRule] = field(default_factory=lambda: list(H1_RULES.values()))
+    max_platform_rate_rps: float = 10.0
+    require_human_in_the_loop: bool = True
+    prohibit_full_autonomy: bool = True
+    prohibit_extortion: bool = True
+    prohibit_dos_ddos: bool = True
+    prohibit_spam: bool = True
+    prohibit_social_engineering: bool = True
+
+    def get_summary(self) -> dict[str, Any]:
+        return {
+            "documents": [self.vdg.to_dict(), self.coc.to_dict()],
+            "rules_count": len(self.active_rules),
+            "max_rate_rps": self.max_platform_rate_rps,
+            "human_in_the_loop": self.require_human_in_the_loop,
+            "prohibit_full_autonomy": self.prohibit_full_autonomy,
+        }
 
 
 class RuleClassification(str, enum.Enum):

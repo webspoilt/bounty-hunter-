@@ -263,7 +263,7 @@ class H1Client:
             )
 
         updated_at = (prog_data.get("attributes") or {}).get("updated_at")
-        scope = Scope.from_h1_structured(handle, entries)
+        scope = Scope.from_h1_structured(handle, entries, strict=True)
         if updated_at:
             scope.imported_at = updated_at
         return scope
@@ -608,17 +608,28 @@ class PolicyParser:
 # PHASE 7 & 8: PROGRAM AUTHORIZATION BRIEF CARD
 # ---------------------------------------------------------------------------
 
+class AssetEligibility(str, enum.Enum):
+    ELIGIBLE = "ELIGIBLE"
+    INELIGIBLE = "INELIGIBLE"
+    UNKNOWN = "UNKNOWN"
+
+
 @dataclass
 class StructuredAssetEntry:
     identifier: str
     asset_type: str
-    eligible_for_bounty: bool
-    eligible_for_submission: bool
-    max_severity: str = "medium"
+    eligible_for_bounty: AssetEligibility = AssetEligibility.UNKNOWN
+    eligible_for_submission: AssetEligibility = AssetEligibility.UNKNOWN
+    max_severity: str = "UNKNOWN"
     instruction: str = ""
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        if hasattr(self.eligible_for_bounty, "value"):
+            d["eligible_for_bounty"] = self.eligible_for_bounty.value
+        if hasattr(self.eligible_for_submission, "value"):
+            d["eligible_for_submission"] = self.eligible_for_submission.value
+        return d
 
 
 @dataclass
@@ -635,12 +646,13 @@ class ProgramAuthorizationBrief:
     scope_exclusions: list[str] = field(default_factory=list)
     testing_restrictions: list[str] = field(default_factory=list)
     rate_limit: float = 3.0
-    custom_headers: dict[str, str] = field(default_factory=dict)
+    custom_headers: dict[str, str] = field(default_factory=list)
     human_review_notes: list[str] = field(default_factory=list)
     recommended_first_target: str = ""
     approval_status: str = "PENDING_HUMAN_APPROVAL"  # PENDING_HUMAN_APPROVAL, APPROVED, REJECTED
     approved_by: str = ""
     approved_at: str = ""
+    reward_range: str = "NOT RETRIEVED"
 
     def render_markdown(self) -> str:
         bounty_str = "Yes (Paid Bounties)" if self.offers_bounties else "No (VDP / Points Only)"
@@ -652,13 +664,14 @@ class ProgramAuthorizationBrief:
 
         headers_str = ", ".join(f"`{k}: {v}`" for k, v in self.custom_headers.items()) if self.custom_headers else "_None required_"
 
-        target_callout = f"🎯 **`{self.recommended_first_target}`**" if self.recommended_first_target else "⚠️ _No in-scope web asset identified for testing_"
+        target_callout = f"🎯 **`{self.recommended_first_target}`**" if self.recommended_first_target else "⚠️ _No in-scope web asset identified for testing (Human review required)_"
 
         return f"""# PROGRAM AUTHORIZATION BRIEF: {self.handle.upper()}
 
 **Program Name:** {self.program_name}  
 **Handle:** `{self.handle}`  
 **Monetary Bounties:** {bounty_str}  
+**Reward Range:** {self.reward_range}  
 **Policy Hash:** `{self.policy_hash[:16]}` (Retrieved: {self.retrieved_at})  
 **Approval Status:** **`{self.approval_status}`**  
 
@@ -705,6 +718,7 @@ class BriefGenerator:
         in_scope = []
         out_of_scope = []
         structured_entries = []
+        human_review_notes = list(policy.ambiguous_clauses)
 
         for s in scopes:
             s_attrs = s.get("attributes") or {}
@@ -712,25 +726,49 @@ class BriefGenerator:
             if not identifier:
                 continue
             asset_type = (s_attrs.get("asset_type") or "").upper()
-            eligible_bounty = bool(s_attrs.get("eligible_for_bounty", True))
-            eligible_sub = s_attrs.get("eligible_for_submission", True) is not False
-            max_sev = s_attrs.get("max_severity") or "medium"
+
+            # Rule 1: Missing eligibility is UNKNOWN, never True or False
+            raw_bounty = s_attrs.get("eligible_for_bounty")
+            if raw_bounty is True:
+                bounty_elig = AssetEligibility.ELIGIBLE
+            elif raw_bounty is False:
+                bounty_elig = AssetEligibility.INELIGIBLE
+            else:
+                bounty_elig = AssetEligibility.UNKNOWN
+
+            raw_sub = s_attrs.get("eligible_for_submission")
+            if raw_sub is True:
+                sub_elig = AssetEligibility.ELIGIBLE
+            elif raw_sub is False:
+                sub_elig = AssetEligibility.INELIGIBLE
+            else:
+                sub_elig = AssetEligibility.UNKNOWN
+
+            # Rule 1: Missing severity is UNKNOWN, never MEDIUM
+            raw_sev = s_attrs.get("max_severity")
+            max_sev = (raw_sev.strip().upper() if raw_sev else "UNKNOWN")
+
             instruction = s_attrs.get("instruction") or ""
 
             entry = StructuredAssetEntry(
                 identifier=identifier,
                 asset_type=asset_type,
-                eligible_for_bounty=eligible_bounty,
-                eligible_for_submission=eligible_sub,
+                eligible_for_bounty=bounty_elig,
+                eligible_for_submission=sub_elig,
                 max_severity=max_sev,
                 instruction=instruction[:500],
             )
             structured_entries.append(entry.to_dict())
 
-            if not eligible_sub:
+            if sub_elig == AssetEligibility.INELIGIBLE:
                 out_of_scope.append(identifier)
-            else:
+            elif sub_elig == AssetEligibility.ELIGIBLE:
                 in_scope.append(identifier)
+            else:
+                # UNKNOWN submission eligibility: cannot silently assume in-scope
+                human_review_notes.append(
+                    f"Asset '{identifier}' has UNKNOWN submission eligibility (explicit human review required)"
+                )
 
         excl_list = [e.get("attributes", {}).get("name") or str(e) for e in exclusions if isinstance(e, dict)]
         if not excl_list:
@@ -741,23 +779,48 @@ class BriefGenerator:
         if policy.requires_custom_header and policy.custom_header_name:
             custom_headers[policy.custom_header_name] = policy.custom_header_value
 
-        # Select first target: prefer URL or specific API hostname over wildcard
+        # Construct temporary Scope object from validated scope entries to verify candidate targets
+        # Never derive authorized hosts from wildcards or unknown eligibility
+        validated_scope_entries = []
+        for e in structured_entries:
+            if e.get("eligible_for_submission") == AssetEligibility.ELIGIBLE.value:
+                validated_scope_entries.append({
+                    "asset_identifier": e["identifier"],
+                    "asset_type": e["asset_type"],
+                    "eligible_for_submission": True,
+                })
+            elif e.get("eligible_for_submission") == AssetEligibility.INELIGIBLE.value:
+                validated_scope_entries.append({
+                    "asset_identifier": e["identifier"],
+                    "asset_type": e["asset_type"],
+                    "eligible_for_submission": False,
+                })
+
+        # Scope mapping with strict=True: UNKNOWN eligibility is excluded from in-scope rules
+        temp_scope = Scope.from_h1_structured(handle, validated_scope_entries, strict=True) if validated_scope_entries else None
+
+        # Select first target:
+        # Rule 2: Must be an exact in-scope URL or hostname; never automatically convert a wildcard
+        # (*.example.com) to apex (https://example.com). Must pass deterministic Scope.is_in_scope().
         first_target = ""
         for a in in_scope:
+            candidate = ""
             if a.startswith("http://") or a.startswith("https://"):
-                first_target = a
-                break
-            if not a.startswith("*.") and ("." in a):
-                first_target = f"https://{a}"
-                break
-        if not first_target and in_scope:
-            candidate = in_scope[0]
-            if candidate.startswith("*."):
-                first_target = f"https://{candidate[2:]}"
-            elif "." in candidate:
-                first_target = f"https://{candidate}"
-            else:
+                candidate = a
+            elif not a.startswith("*") and ("." in a):
+                candidate = f"https://{a}"
+
+            if candidate and temp_scope and temp_scope.is_in_scope(candidate):
                 first_target = candidate
+                break
+
+        if not first_target:
+            if in_scope:
+                human_review_notes.append(
+                    "Scope contains wildcard or non-URL assets only. Operator must specify concrete authorized target."
+                )
+            else:
+                human_review_notes.append("No confirmed in-scope submission assets available from API.")
 
         return ProgramAuthorizationBrief(
             handle=handle,
@@ -772,8 +835,9 @@ class BriefGenerator:
             testing_restrictions=restrictions,
             rate_limit=policy.rate_limit_rps,
             custom_headers=custom_headers,
-            human_review_notes=policy.ambiguous_clauses,
+            human_review_notes=sorted(set(human_review_notes)),
             recommended_first_target=first_target,
+            reward_range="NOT RETRIEVED",
         )
 
     @staticmethod

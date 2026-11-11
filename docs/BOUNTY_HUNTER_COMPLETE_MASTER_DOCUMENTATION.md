@@ -3243,7 +3243,8 @@ Implemented in `bb.h1.HackerOneReportGenerator` and CLI `bb h1 report`:
 | `tests/test_h1_pipeline.py` | 9 | Credential missing, host restriction, pagination, 429 retry, multi-factor ranking, policy parsing, brief card generation, target scope enforcement, report draft preparation |
 | `tests/test_h1_repair.py` | 5 | `asdict` serialization, safe filename sanitization, honest asset display when not loaded, rating-based ranking scoring, empty & populated asset inventories |
 | `tests/test_h1_policy.py` | 8 | Platform rules knowledge base, rate ceiling caps, prohibited attack blocking, write approval gates, report quality gates, PII redaction |
-| **Total Pipeline Pass** | **28 passed** | **Zero failures, zero regressions across 371 total project tests** |
+| `tests/test_h1_scope_validation.py` | 8 | Missing eligibility/severity UNKNOWN defaults, separate submission/bounty properties, wildcard apex non-inference, exclusion override, global profile integrity, fail-closed authorization |
+| **Total Pipeline Pass** | **36 passed** | **Zero failures, zero regressions across 379 total project tests** |
 
 ---
 
@@ -3288,6 +3289,19 @@ Resolved misleading listings in `bb h1 programs`:
   - `LOADED_WITH_ASSETS`: Scopes successfully parsed; exact web target and wildcard count displayed.
   - `FETCH_FAILED`: Network or permission error retrieving structured scopes.
 - **Transparent Opportunity Scoring**: Replaced arbitrary 55.0 defaults with transparent scoring breakdown reasons. Programs with unpopulated scopes are clearly marked `INSUFFICIENT DATA` until inspected with `bb h1 brief`.
+
+### 20.5 Strict Asset Eligibility & Wildcard Scope Invariants
+
+Implemented in `bb.h1.BriefGenerator` and `bb.scope.Scope`:
+- **Fail-Closed Eligibility (`AssetEligibility`)**:
+  - Absent `eligible_for_bounty` is `UNKNOWN` (never defaulted to True).
+  - Absent `eligible_for_submission` is `UNKNOWN` (never defaulted to True).
+  - Absent `max_severity` is `UNKNOWN` (never defaulted to "medium").
+  - Assets with `UNKNOWN` submission eligibility are excluded from automatic scope rules and flagged for mandatory operator human review.
+- **Wildcard Non-Inference Invariant**:
+  - A wildcard asset `*.example.com` explicitly authorizes subdomains (`api.example.com`, `admin.portal.example.com`) but strictly refuses the apex domain `https://example.com`.
+  - `BriefGenerator` validates every candidate recommendation through deterministic `Scope.is_in_scope()` and will never derive an apex URL from a wildcard rule.
+  - When only wildcard assets exist without a specific host or URL, `recommended_first_target` remains blank and prompts for operator specification.
 
 ---
 

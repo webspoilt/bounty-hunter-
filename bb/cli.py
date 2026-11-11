@@ -795,11 +795,13 @@ def cmd_h1(args) -> int:
 
         ranked = ProgramDiscoveryRanker.rank_programs(progs)
         print(f"\nDiscovered {len(ranked)} program(s) ranked by research opportunity:")
-        print("-" * 80)
+        print("=" * 115)
+        print(f"{'Opportunity Score':<19} {'Handle':<22} {'Bounty':<10} {'Reward Range':<26} {'Scope & Assets':<45} State")
+        print("-" * 115)
         for r in ranked[:args.limit or 25]:
             print(r.summary())
-        print("-" * 80)
-        print("Run `bb h1 brief --program <handle>` to inspect full guidelines and asset inventory.")
+        print("-" * 115)
+        print("Run `bb h1 brief --program <handle>` to inspect full guidelines, reward data and asset inventory.")
         return 0
 
     if action == "brief":
@@ -941,6 +943,29 @@ def cmd_h1(args) -> int:
         print(f"    JSON Payload: {out_json}")
         print("\n" + draft["curl_command"])
         print("\n[!] HUMAN SUBMISSION REQUIRED: Review reproduction evidence, then submit manually via HackerOne web UI or curl.")
+        return 0
+
+    if action == "policy":
+        from bb.h1_policy import GlobalH1PolicyProfile, VDG_METADATA, COC_METADATA
+        profile = GlobalH1PolicyProfile()
+        print("\n=== GLOBAL HACKERONE POLICY COMPLIANCE PROFILE ===")
+        print(f"Platform Request Rate Ceiling:  {profile.max_platform_rate_rps} req/sec (hard cap)")
+        print(f"Human-in-the-Loop Enforced:    {'YES (Mandatory)' if profile.require_human_in_the_loop else 'NO'}")
+        print(f"Autonomous Reporting Blocked:  {'YES (Mandatory)' if profile.prohibit_full_autonomy else 'NO'}")
+        print("\nOfficial Anchored Documents:")
+        print(f"  1. {profile.vdg.name} ({profile.vdg.version})")
+        print(f"     URL: {profile.vdg.original_url}")
+        print(f"     SHA-256: {profile.vdg.sha256}")
+        print(f"     Retrieved: {profile.vdg.retrieved_at}")
+        print(f"  2. {profile.coc.name} ({profile.coc.version})")
+        print(f"     URL: {profile.coc.original_url}")
+        print(f"     SHA-256: {profile.coc.sha256}")
+        print(f"     Retrieved: {profile.coc.retrieved_at}")
+        print(f"\nActive Structured Rules ({len(profile.active_rules)}):")
+        for r in profile.active_rules:
+            override_str = "Program Overridable" if r.can_program_override else "Universal Platform Floor"
+            print(f"  * [{r.rule_id}] {r.classification.value:<12} {r.section_heading} ({override_str})")
+            print(f"    Summary: {r.summary}")
         return 0
 
     print(f"[!] Unknown h1 action: {action}")
@@ -1693,6 +1718,9 @@ def build_parser() -> argparse.ArgumentParser:
     h1_appr.add_argument("--program", required=True, help="program handle")
     h1_appr.add_argument("--target", help="specific in-scope target URL or host")
     h1_appr.set_defaults(func=cmd_h1)
+
+    h1_pol = h1_sub.add_parser("policy", help="display Global HackerOne policy compliance profile and rules")
+    h1_pol.set_defaults(func=cmd_h1)
 
     h1_rep = h1_sub.add_parser("report", help="prepare HackerOne submission report draft for verified finding")
     h1_rep.add_argument("--finding", required=True, help="finding ID or prefix")

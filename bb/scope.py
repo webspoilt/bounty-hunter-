@@ -241,7 +241,7 @@ class Scope:
 
     @classmethod
     def from_h1_structured(cls, handle: str, structured: Iterable[dict],
-                           source: str = "hackerone-api") -> "Scope":
+                           source: str = "hackerone-api", strict: bool = False) -> "Scope":
         """Map HackerOne structured_scopes[] to rules. Unsupported asset types are warned about."""
         ins, outs, raw, warnings = [], [], [], []
         for entry in structured:
@@ -259,8 +259,15 @@ class Scope:
             if asset_type not in SUPPORTED_ASSET_TYPES:
                 warnings.append(f"unsupported asset type {asset_type} for {identifier!r} — not tested")
                 continue
+            # Rule: only assets explicitly marked eligible for submission are added to in-scope rules
+            # When strict=True, absent eligible_for_submission is treated as UNKNOWN and excluded (fail-closed)
+            # Default backward-compatible behavior: if eligible_for_submission is explicitly False -> out-of-scope;
+            # if omitted (e.g. legacy/simple mock entry) and not strict -> included.
             if entry.get("eligible_for_submission") is False:
                 outs.append(parse_rule(identifier))
+                continue
+            if strict and entry.get("eligible_for_submission") is not True:
+                warnings.append(f"asset {identifier!r} has UNKNOWN submission eligibility — excluded from in-scope rules")
                 continue
             if asset_type == "URL":
                 ins.append(parse_rule(identifier))
