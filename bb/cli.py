@@ -821,19 +821,43 @@ def cmd_h1(args) -> int:
         policy_rec = PolicyParser.parse_policy(handle, policy_text)
         brief = BriefGenerator.generate_brief(prog, policy_rec, scopes, exclusions)
 
-        # Check existing approval status
-        from bb.h1 import H1_BRIEFS_DIR
+        # Check existing approval status and validate fingerprints
+        from bb.h1 import H1_BRIEFS_DIR, atomic_write_json
         brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
         if brief_file.exists():
             try:
                 saved_data = json.loads(brief_file.read_text(encoding="utf-8"))
-                brief.approval_status = saved_data.get("approval_status", brief.approval_status)
-                brief.approved_by = saved_data.get("approved_by", brief.approved_by)
-                brief.approved_at = saved_data.get("approved_at", brief.approved_at)
-            except Exception:
-                pass
-        else:
-            brief_file.write_text(json.dumps(asdict(brief), indent=2), encoding="utf-8")
+                prev_status = saved_data.get("approval_status")
+                prev_policy_hash = saved_data.get("policy_hash") or saved_data.get("approved_policy_hash")
+                prev_scope_fp = saved_data.get("scope_fingerprint") or saved_data.get("approved_scope_fingerprint")
+
+                if prev_status == "APPROVED":
+                    # Only preserve approval if exact policy hash and scope fingerprint match
+                    if prev_policy_hash == brief.policy_hash and prev_scope_fp == brief.scope_fingerprint:
+                        brief.approval_status = "APPROVED"
+                        brief.approved_by = saved_data.get("approved_by", "")
+                        brief.approved_at = saved_data.get("approved_at", "")
+                        brief.approved_target = saved_data.get("approved_target", "")
+                        brief.approved_policy_hash = prev_policy_hash
+                        brief.approved_scope_fingerprint = prev_scope_fp
+                        brief.recommended_first_target = brief.approved_target or brief.recommended_first_target
+                        print(f"[+] Preserved existing approval for target '{brief.approved_target}' (policy and scope fingerprints unchanged)")
+                    else:
+                        brief.approval_status = "PENDING_HUMAN_APPROVAL"
+                        diff_reasons = []
+                        if prev_policy_hash != brief.policy_hash:
+                            diff_reasons.append("program policy changed")
+                        if prev_scope_fp != brief.scope_fingerprint:
+                            diff_reasons.append("structured scope changed")
+                        print(f"[!] REVOKED previous approval: {', '.join(diff_reasons)}. Re-approval required.")
+                        brief.human_review_notes.append(
+                            f"Previous approval revoked because: {', '.join(diff_reasons)}. Operator must re-approve."
+                        )
+            except Exception as exc:
+                print(f"[!] Error inspecting existing brief approval: {exc}")
+
+        # Always persist freshly retrieved brief data atomically
+        atomic_write_json(brief_file, asdict(brief))
 
         md_output = brief.render_markdown()
         print("\n" + md_output)
@@ -846,17 +870,21 @@ def cmd_h1(args) -> int:
     if action == "approve":
         raw_handle = args.program
         handle = sanitize_handle(raw_handle)
-        target = args.target
-        from bb.h1 import H1_BRIEFS_DIR, H1_PROGRAMS_DIR
+        target = (getattr(args, "target", None) or "").strip()
+        if not target:
+            print("[!] APPROVAL REJECTED: Concrete in-scope target is mandatory.")
+            print(f"[!] Run: bb h1 approve --program {handle} --target \"https://<in-scope-host>\"")
+            return 1
+
+        from bb.h1 import H1_BRIEFS_DIR, H1_PROGRAMS_DIR, atomic_write_json, AssetEligibility
         brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
         if not brief_file.exists():
             print(f"[!] Brief not found for '{handle}'. Run `bb h1 brief --program {handle}` first.")
             return 1
 
         data = json.loads(brief_file.read_text(encoding="utf-8"))
-        in_assets = data.get("in_scope_assets", [])
-        
-        # Verify proposed target against in-scope rules
+
+        # Verify proposed target against freshly verified structured scope rules
         try:
             client = H1Client()
             scope = client.scope(handle)
@@ -864,34 +892,50 @@ def cmd_h1(args) -> int:
             print(f"[!] Could not verify program scope for '{handle}': {exc}")
             return 1
 
-        if target:
-            if not scope.is_in_scope(target):
-                print(f"[!] PROPOSED TARGET REJECTED: '{target}' is NOT in-scope according to program policy rules.")
-                print("[!] Target testing refused under deterministic safety invariant.")
-                return 1
-            print(f"[+] Verified target '{target}' matches program scope rules.")
+        if not scope.is_in_scope(target):
+            print(f"[!] PROPOSED TARGET REJECTED: '{target}' is NOT in-scope according to program policy rules.")
+            print("[!] Target testing refused under deterministic safety invariant.")
+            return 1
+
+        # Check structured asset entries for UNKNOWN or INELIGIBLE submission status
+        entries = data.get("structured_asset_entries") or []
+        for e in entries:
+            # Check if this asset entry directly matches the target host
+            ident = e.get("identifier", "")
+            if ident and ident in target:
+                if e.get("eligible_for_submission") == AssetEligibility.INELIGIBLE.value:
+                    print(f"[!] PROPOSED TARGET REJECTED: '{target}' is explicitly marked INELIGIBLE for submission.")
+                    return 1
+                if e.get("eligible_for_submission") == AssetEligibility.UNKNOWN.value:
+                    print(f"[!] PROPOSED TARGET REJECTED: '{target}' has UNKNOWN submission eligibility.")
+                    print("[!] Clarify eligibility with program security team before approving.")
+                    return 1
 
         data["approval_status"] = "APPROVED"
         data["approved_by"] = os.environ.get("USERNAME") or os.environ.get("USER") or "researcher"
         data["approved_at"] = now_iso()
-        if target:
-            data["recommended_first_target"] = target
-        brief_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        data["approved_target"] = target
+        data["recommended_first_target"] = target
+        data["approved_policy_hash"] = data.get("policy_hash", "")
+        data["approved_scope_fingerprint"] = scope.fingerprint
+        data["scope_fingerprint"] = scope.fingerprint
+
+        atomic_write_json(brief_file, data)
 
         # Save program profile for continuous research engine
         from bb.h1 import ProgramAuthorizationBrief
         brief_obj = ProgramAuthorizationBrief(**data)
         profile = BriefGenerator.create_program_profile(brief_obj)
         profile_path = H1_PROGRAMS_DIR / f"{handle}_profile.json"
-        profile_path.write_text(json.dumps(asdict(profile), indent=2), encoding="utf-8")
+        atomic_write_json(profile_path, asdict(profile))
 
         # Also save official scope file into data/scopes/
         scope_p = scope.save(scope_path(handle))
         print(f"[+] Program '{handle}' APPROVED for investigation.")
         print(f"[+] Program research profile written: {profile_path}")
         print(f"[+] Scope written: {scope_p}")
-        print(f"[+] Target '{target or data.get('recommended_first_target')}' authorized for testing.")
-        print(f"\nNext: launch investigation with `bb auto --program {handle} --target {target or data.get('recommended_first_target')}`")
+        print(f"[+] Concrete target '{target}' verified and authorized for testing.")
+        print(f"\nNext: launch investigation with `bb auto --program {handle} --entry \"{target}\"`")
         return 0
 
     if action == "report":
@@ -918,11 +962,18 @@ def cmd_h1(args) -> int:
             )
 
         # HackerOne Policy Compliance Audit Gate before drafting
+        from bb.h1 import ProgramVisibility
         from bb.h1_policy import PolicyComplianceEngine, format_compliance_report
+        
+        # Determine visibility objectively: never assume private because of bounty status
+        is_private = (brief.visibility == ProgramVisibility.PRIVATE)
+        if brief.visibility == ProgramVisibility.UNKNOWN:
+            print("[!] Note: Program visibility is UNKNOWN. Treating with conservative confidentiality standards.")
+
         comp_res = PolicyComplianceEngine.validate_finding_for_submission(
             finding=finding,
             program_handle=handle,
-            is_private=not brief.offers_bounties,
+            is_private=is_private,
             ai_generated=bool(finding.meta.get("ai_generated") or finding.meta.get("hypothesis_id")),
         )
         print("\n" + format_compliance_report(comp_res))
@@ -990,10 +1041,36 @@ def cmd_auto(args) -> int:
     from bb.auto import AutoHunter, AutoHunterConfig
     _require_not_stopped()
     scope = _scope_or_die(args.program)
+    
+    # Check if this program has a HackerOne brief with approved target
+    from bb.h1 import H1_BRIEFS_DIR
+    brief_file = H1_BRIEFS_DIR / f"{sanitize_handle(args.program)}_brief.json"
+    approved_target = ""
+    if brief_file.exists():
+        try:
+            brief_data = json.loads(brief_file.read_text(encoding="utf-8"))
+            if brief_data.get("approval_status") == "APPROVED":
+                approved_target = brief_data.get("approved_target") or brief_data.get("recommended_first_target") or ""
+        except Exception:
+            pass
+
     accounts = load_accounts(accounts_path(args.accounts)) if args.accounts else None
-    entries = args.entry or [f"https://{h}" for h in scope.apex_domains() if not h.startswith("*")]
+    entries = args.entry
+    if not entries:
+        if approved_target:
+            entries = [approved_target]
+            print(f"[*] Using operator-approved target from program brief: {approved_target}")
+        else:
+            entries = [f"https://{h}" for h in scope.apex_domains() if not h.startswith("*")]
+
     if not entries:
         raise SystemExit("no entry URLs found; supply via --entry https://target.com")
+
+    # If program has an approved brief with a specific target, ensure provided entries match
+    if approved_target and args.entry:
+        for e in args.entry:
+            if not scope.is_in_scope(e):
+                raise SystemExit(f"entry target '{e}' violates scope rules for approved program '{args.program}'")
 
     cfg = AutoHunterConfig(
         program=args.program,
@@ -1716,7 +1793,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     h1_appr = h1_sub.add_parser("approve", help="operator approval of program and first target")
     h1_appr.add_argument("--program", required=True, help="program handle")
-    h1_appr.add_argument("--target", help="specific in-scope target URL or host")
+    h1_appr.add_argument("--target", required=True, help="specific in-scope target URL or host (mandatory)")
     h1_appr.set_defaults(func=cmd_h1)
 
     h1_pol = h1_sub.add_parser("policy", help="display Global HackerOne policy compliance profile and rules")

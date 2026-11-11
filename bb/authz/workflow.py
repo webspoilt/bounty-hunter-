@@ -229,6 +229,7 @@ class AuthzInvestigationWorkflow:
             shared=self.budget,
             store=self.store,
             transport=transport,
+            writes_approved=allow_write,
         )
         verifier = AuthorizationVerifier(active_client)
 

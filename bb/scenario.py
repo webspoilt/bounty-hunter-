@@ -626,7 +626,8 @@ def run_scenario(scenario: dict, *, scope: Scope, accounts: dict, program: str,
                               "schema": schema})
     client = ScopedClient(scope, base_url=base_url, proxy=proxy,
                           rate=float(scenario.get("rate", 3.0)), dry_run=dry_run,
-                          store=store, run_id=run_id, tool="scenario", transport=transport)
+                          store=store, run_id=run_id, tool="scenario", transport=transport,
+                          writes_approved=allow_write)
     verdict = "inconclusive"
     finding: Finding | None = None
     results: dict[str, StepResult] = {}

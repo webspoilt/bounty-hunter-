@@ -327,6 +327,7 @@ class BenchmarkHarness:
             run_id="benchmark-eval",
             shared=budget,
             tool="benchmark_harness",
+            writes_approved=True,
         )
 
         discovery_sys = BenchmarkDiscoverySystem(client, self.store, run_id="benchmark-eval")

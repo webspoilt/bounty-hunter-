@@ -18,9 +18,15 @@ import httpx
 
 from bb import killswitch
 from bb.config import BODY_CAP, DEFAULT_RATE, DEFAULT_TIMEOUT, USER_AGENT
+from bb.h1_policy import PolicyComplianceEngine
 from bb.models import Exchange
 from bb.redact import redact_body, redact_headers
 from bb.scope import Scope, ScopeViolation
+
+
+class PolicyViolation(RuntimeError):
+    """Raised when an outbound HTTP request violates HackerOne platform rules or program policy."""
+    pass
 
 
 class BudgetExceeded(RuntimeError):
@@ -75,11 +81,19 @@ class ScopedClient:
                  tool: str = "http", verify: bool = True, user_agent: str | None = None,
                  transport: httpx.BaseTransport | None = None,
                  resolve_dns: bool | None = None,
-                 shared: RequestBudget | None = None):
+                 shared: RequestBudget | None = None,
+                 writes_approved: bool = False,
+                 max_program_rate: float | None = None,
+                 test_type: str = "http_request",
+                 is_private_program: bool = False):
         self.scope = scope
         self.base_url = base_url
+        self.writes_approved = writes_approved
+        self.max_program_rate = max_program_rate if max_program_rate is not None else 10.0
+        self.test_type = test_type
+        self.is_private_program = is_private_program
         # Enforce platform ceiling (10 req/sec) to adhere to HackerOne CoC unsafe testing rules
-        self.rate = min(max(rate, 0.1), 10.0)
+        self.rate = min(max(rate, 0.1), 10.0, self.max_program_rate)
         self.max_requests = max_requests
         self.deadline = deadline
         self.shared = shared            # when set, count/deadline/pacing are collective
@@ -174,6 +188,26 @@ class ScopedClient:
                 params: dict | None = None, json=None, data=None, content=None,
                 follow_redirects: bool = False) -> httpx.Response:
         absolute = self.resolve(url)
+
+        # Policy Preflight Gate: validate method, rate, prohibited testing types and write authorizations
+        # In dry_run mode, requests are planned rather than transmitted to the wire.
+        policy_res = PolicyComplianceEngine.validate_testing_action(
+            method=method,
+            url=absolute,
+            program_handle=getattr(self.scope, "program", "unknown"),
+            rate_rps=self.rate,
+            max_program_rate=self.max_program_rate,
+            is_state_changing=(method.upper() in ("POST", "PUT", "PATCH", "DELETE")),
+            writes_approved=(self.writes_approved or self.dry_run),
+            test_type=self.test_type,
+            is_private_program=self.is_private_program,
+        )
+        if not policy_res.compliant:
+            v_msgs = "; ".join(f"[{v.rule_id}] {v.message}" for v in policy_res.violations)
+            if self.store:
+                self.store.audit_scope(self.run_id, absolute, "POLICY_BLOCK", v_msgs)
+            raise PolicyViolation(f"{method.upper()} {absolute} blocked by HackerOne Policy Engine: {v_msgs}")
+
         decision = self.scope.check(absolute)
         if not decision.allowed:
             if self.store:

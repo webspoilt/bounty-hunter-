@@ -3303,6 +3303,33 @@ Implemented in `bb.h1.BriefGenerator` and `bb.scope.Scope`:
   - `BriefGenerator` validates every candidate recommendation through deterministic `Scope.is_in_scope()` and will never derive an apex URL from a wildcard rule.
   - When only wildcard assets exist without a specific host or URL, `recommended_first_target` remains blank and prompts for operator specification.
 
+### 20.6 Final HackerOne Pipeline Audit & Production Invariants
+
+In response to the final production audit, the HackerOne integration underwent comprehensive hardening:
+1. **Atomic Brief Persistence & Invalidation Lifecycle**:
+   - `atomic_write_json()` writes all brief and state records atomically via unique temporary files and atomic rename to eliminate partial or corrupted state files on interruption.
+   - When updating or re-fetching program briefs, existing human approvals are verified strictly against the cryptographic `policy_hash` and canonical `scope_fingerprint`.
+   - If either the program's policy changes (policy hash mismatch) or in-scope assets/exclusions change (scope fingerprint mismatch), any prior operator approval is immediately revoked (`approved=False`), requiring renewed operator review.
+2. **Mandatory Target-Bound Approval**:
+   - `bb h1 approve` mandates an explicit `--target <URL>` argument.
+   - The approved target is validated against the parsed program scope and asset eligibility before approval is granted.
+   - Rejection is enforced for missing targets, out-of-scope targets, or assets with `UNKNOWN` submission eligibility.
+   - `bb auto` strictly consumes the approved target from the authorization brief.
+3. **Explicit Program Visibility Classification**:
+   - Formalized `ProgramVisibility` enum (`PUBLIC`, `PRIVATE`, `UNKNOWN`).
+   - Program visibility is determined exclusively from platform privacy attributes and never conflated with `offers_bounties`.
+   - Report drafting and logging rigorously enforce confidentiality standards when `visibility == ProgramVisibility.PRIVATE`.
+4. **Real HTTP Policy Preflight Gate in ScopedClient**:
+   - Outbound requests pass through `PolicyComplianceEngine.validate_testing_action()` directly inside `ScopedClient.request()`.
+   - Volumetric rate limits and prohibited attack categories (DoS/DDoS, spam, social engineering, physical testing) are blocked synchronously before touching the network.
+   - Rate limit semantics explicitly clarified: the $10.0\text{ req/s}$ ceiling is Bounty Hunter's internal defensive ceiling to prevent accidental service degradation, not an official HackerOne quantitative platform rule.
+   - Standard authentication endpoints (`/login`, `/logout`, `/token`, `/session`, `/auth`) and read GraphQL queries are exempt from state-changing write restrictions.
+5. **Scope Exclusion Record Parsing**:
+   - Structured `ScopeExclusionRecord` objects retain detailed metadata (`category`, `details`, `created_at`, `updated_at`), maintaining clear distinction from asset host exclusions.
+6. **Report Quality & Evidence Redaction Guard**:
+   - `validate_finding_for_submission()` scans finding descriptions and attached HTTP exchanges (request/response headers and bodies) for unredacted credentials, tokens, or financial data, and rejects speculative or placeholder impact statements.
+   - Regular expression scanning is documented as heuristic defense-in-depth, not exhaustive PII detection, ensuring mandatory human operator review before submission.
+
 ---
 
 ## 21. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT

@@ -36,6 +36,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import urlsplit
 
 from bb.config import DATA, now_iso
 from bb.models import Finding
@@ -517,18 +518,27 @@ class PolicyComplianceEngine:
                                 writes_approved: bool = False,
                                 test_type: str = "http_request",
                                 is_private_program: bool = False) -> ComplianceResult:
-        """Validate an outbound testing operation before sending."""
+        """Validate an outbound testing operation before sending.
+
+        Note on Rate Limiting:
+        The 10.0 req/sec limit is Bounty Hunter's internal defensive ceiling designed
+        to prevent accidental denial of service (DoS) under HackerOne Code of Conduct
+        prohibitions against service degradation. HackerOne's official Code of Conduct
+        forbids DoS and excessive traffic qualitatively, without specifying a global
+        numerical rate limit.
+        """
         violations: list[ComplianceViolation] = []
         warnings: list[ComplianceViolation] = []
         notes: list[str] = []
 
         # 1. Traffic & Rate Limit Checks (COC-UNSAFE-002)
+        # Note: 10 req/s is Bounty Hunter's internal defensive safety ceiling, not an official H1 numerical rule.
         if rate_rps > 10.0:
             violations.append(ComplianceViolation(
                 rule_id="COC-UNSAFE-002",
                 rule_classification=RuleClassification.MUST_NOT,
                 category=RuleCategory.UNSAFE_TESTING,
-                message=f"Proposed rate of {rate_rps} req/sec exceeds safe platform ceiling (10 req/sec) and constitutes excessive traffic.",
+                message=f"Proposed rate of {rate_rps} req/sec exceeds safe platform ceiling (10 req/sec internal defensive ceiling) and constitutes excessive traffic.",
                 blocking=True,
             ))
         elif rate_rps > max_program_rate:
@@ -560,8 +570,17 @@ class PolicyComplianceEngine:
 
         # 3. State changing operations check (COC-UNSAFE-005)
         method_upper = method.upper()
+        # Parse path to exempt standard authentication and read-only introspection endpoints
+        path_lower = urlsplit(url).path.lower()
+        is_auth_or_read_endpoint = any(
+            p in path_lower for p in ("/login", "/logout", "/token", "/session", "/auth", "/register", "/graphql")
+        )
+
+        if is_auth_or_read_endpoint:
+            is_state_changing = False
+
         if method_upper in ("POST", "PUT", "PATCH", "DELETE"):
-            if not is_state_changing:
+            if not is_auth_or_read_endpoint:
                 is_state_changing = True
             if is_state_changing and not writes_approved:
                 violations.append(ComplianceViolation(
@@ -654,23 +673,37 @@ class PolicyComplianceEngine:
                 ))
 
         # 5. PII / Confidentiality leak prevention (COC-PRIV-001)
-        # Check title, summary, steps for third-party PII leak
-        full_text = f"{finding.title} {finding.summary} {' '.join(finding.steps)} {finding.impact}"
-        # Simple regex for real credit cards, social security numbers, unredacted passwords
+        # Note: Regular expressions provide heuristic defense-in-depth for common patterns (tokens, credit cards, credentials)
+        # and do not constitute exhaustive PII detection. Operators must conduct human review before final report submission.
+        evidence_texts = []
+        for ex in (finding.evidence or []):
+            if hasattr(ex, "request"):
+                evidence_texts.append(str(getattr(ex.request, "headers", "")))
+                evidence_texts.append(str(getattr(ex.request, "body", "")))
+            if hasattr(ex, "response"):
+                evidence_texts.append(str(getattr(ex.response, "headers", "")))
+                evidence_texts.append(str(getattr(ex.response, "body", "")))
+            if isinstance(ex, dict):
+                evidence_texts.append(str(ex.get("request", "")))
+                evidence_texts.append(str(ex.get("response", "")))
+
+        full_text = f"{finding.title} {finding.summary} {' '.join(finding.steps)} {finding.impact} {' '.join(evidence_texts)}"
+
+        # Heuristic regex for real credit cards, social security numbers, unredacted tokens/passwords
         if re.search(r"\b(?:\d{4}[ -]?){3}\d{4}\b", full_text):
             violations.append(ComplianceViolation(
                 rule_id="COC-PRIV-001",
                 rule_classification=RuleClassification.MUST_NOT,
                 category=RuleCategory.CONFIDENTIALITY_PRIVACY,
-                message="Report contains potential unredacted credit card or financial data. Must redact before submission.",
+                message="Report or attached evidence contains potential unredacted credit card or financial data. Must redact before submission.",
                 blocking=True,
             ))
-        if re.search(r"\bpassword\s*[:=]\s*['\"][^'\"]+['\"]", full_text, re.I):
+        if re.search(r"\b(password|passwd|api[_-]?key|bearer\s+[a-zA-Z0-9_\-\.]{20,})\b", full_text, re.I):
             warnings.append(ComplianceViolation(
                 rule_id="COC-PRIV-001",
                 rule_classification=RuleClassification.SHOULD_NOT,
                 category=RuleCategory.CONFIDENTIALITY_PRIVACY,
-                message="Report contains plaintext credentials. Redact sensitive values.",
+                message="Report or attached evidence contains potential unredacted credential or API key tokens (heuristic scan; manual review required).",
                 blocking=False,
             ))
 

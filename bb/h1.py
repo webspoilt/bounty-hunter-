@@ -50,6 +50,19 @@ def ensure_h1_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+def atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON data atomically to prevent corrupt or partial state files."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
+    try:
+        temp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        temp_path.replace(path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+
 def sanitize_handle(handle: str) -> str:
     """Sanitize program handle to prevent path traversal or invalid filesystem characters."""
     cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", (handle or "").strip())
@@ -273,6 +286,12 @@ class H1Client:
 # PHASE 4 & 5: PROGRAM DISCOVERY AND RANKING
 # ---------------------------------------------------------------------------
 
+class ProgramVisibility(str, enum.Enum):
+    PUBLIC = "PUBLIC"
+    PRIVATE = "PRIVATE"
+    UNKNOWN = "UNKNOWN"
+
+
 class ScopeRetrievalStatus(str, enum.Enum):
     NOT_LOADED = "NOT_LOADED"
     LOADED_EMPTY = "LOADED_EMPTY"
@@ -299,6 +318,7 @@ class RankedProgram:
     reasons: list[str] = field(default_factory=list)
     raw_attributes: dict[str, Any] = field(default_factory=dict)
     reward_range: str = "NOT RETRIEVED"
+    visibility: ProgramVisibility = ProgramVisibility.UNKNOWN
 
     @property
     def assets_loaded(self) -> bool:
@@ -440,6 +460,15 @@ class ProgramDiscoveryRanker:
 
             score = round(max(score, 0.0), 1)
 
+        # Determine authoritative visibility from API attributes if present
+        raw_state = (attrs.get("state") or "").lower()
+        if raw_state in ("public", "public_mode"):
+            visibility = ProgramVisibility.PUBLIC
+        elif raw_state in ("private", "private_mode", "soft_launched"):
+            visibility = ProgramVisibility.PRIVATE
+        else:
+            visibility = ProgramVisibility.UNKNOWN
+
         return RankedProgram(
             handle=handle,
             name=name,
@@ -457,6 +486,7 @@ class ProgramDiscoveryRanker:
             reasons=reasons,
             raw_attributes=attrs,
             reward_range="NOT RETRIEVED",
+            visibility=visibility,
         )
 
     @classmethod
@@ -632,6 +662,22 @@ class StructuredAssetEntry:
         return d
 
 
+@dataclass(frozen=True)
+class ScopeExclusionRecord:
+    category: str
+    details: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def summary(self) -> str:
+        if self.details:
+            return f"{self.category}: {self.details}"
+        return self.category
+
+
 @dataclass
 class ProgramAuthorizationBrief:
     """Human-readable Program Brief for researcher authorization."""
@@ -644,21 +690,38 @@ class ProgramAuthorizationBrief:
     out_of_scope_assets: list[str]
     structured_asset_entries: list[dict[str, Any]] = field(default_factory=list)
     scope_exclusions: list[str] = field(default_factory=list)
+    scope_exclusion_records: list[dict[str, Any]] = field(default_factory=list)
     testing_restrictions: list[str] = field(default_factory=list)
     rate_limit: float = 3.0
-    custom_headers: dict[str, str] = field(default_factory=list)
+    custom_headers: dict[str, str] = field(default_factory=dict)
     human_review_notes: list[str] = field(default_factory=list)
     recommended_first_target: str = ""
     approval_status: str = "PENDING_HUMAN_APPROVAL"  # PENDING_HUMAN_APPROVAL, APPROVED, REJECTED
     approved_by: str = ""
     approved_at: str = ""
     reward_range: str = "NOT RETRIEVED"
+    visibility: ProgramVisibility = ProgramVisibility.UNKNOWN
+    approved_target: str = ""
+    approved_policy_hash: str = ""
+    approved_scope_fingerprint: str = ""
+    scope_fingerprint: str = ""
 
     def render_markdown(self) -> str:
         bounty_str = "Yes (Paid Bounties)" if self.offers_bounties else "No (VDP / Points Only)"
+        vis_str = self.visibility.value if hasattr(self.visibility, "value") else str(self.visibility)
         in_assets_str = "\n".join(f"- `{a}`" for a in self.in_scope_assets[:30]) or "- _No accessible structured scope assets returned by API_"
         out_assets_str = "\n".join(f"- `{a}`" for a in self.out_of_scope_assets[:15]) or "- _None specified_"
-        excl_str = "\n".join(f"- {e}" for e in self.scope_exclusions[:10]) or "- _Standard H1 exclusions_"
+        
+        # Display exclusions categorized properly
+        excl_lines = []
+        for er in self.scope_exclusion_records:
+            cat = er.get("category", "")
+            det = er.get("details", "")
+            excl_lines.append(f"- **{cat}**: {det}" if det else f"- **{cat}**")
+        if not excl_lines and self.scope_exclusions:
+            excl_lines = [f"- {e}" for e in self.scope_exclusions[:10]]
+        excl_str = "\n".join(excl_lines) or "- _Standard H1 exclusions_"
+
         restr_str = "\n".join(f"- {r}" for r in self.testing_restrictions) or "- _Standard polite rate limits_"
         notes_str = "\n".join(f"- ⚠️ {n}" for n in self.human_review_notes) or "- None. Standard policy terms."
 
@@ -666,14 +729,20 @@ class ProgramAuthorizationBrief:
 
         target_callout = f"🎯 **`{self.recommended_first_target}`**" if self.recommended_first_target else "⚠️ _No in-scope web asset identified for testing (Human review required)_"
 
+        approval_callout = f"**`{self.approval_status}`**"
+        if self.approval_status == "APPROVED":
+            approval_callout += f" (Target: `{self.approved_target}`, By: `{self.approved_by}` at {self.approved_at})"
+
         return f"""# PROGRAM AUTHORIZATION BRIEF: {self.handle.upper()}
 
 **Program Name:** {self.program_name}  
 **Handle:** `{self.handle}`  
+**Visibility:** `{vis_str}`  
 **Monetary Bounties:** {bounty_str}  
 **Reward Range:** {self.reward_range}  
 **Policy Hash:** `{self.policy_hash[:16]}` (Retrieved: {self.retrieved_at})  
-**Approval Status:** **`{self.approval_status}`**  
+**Scope Fingerprint:** `{self.scope_fingerprint[:16] if self.scope_fingerprint else 'ad-hoc'}`  
+**Approval Status:** {approval_callout}  
 
 ---
 
@@ -683,7 +752,7 @@ class ProgramAuthorizationBrief:
 ### Explicit Out-of-Scope Assets ({len(self.out_of_scope_assets)} targets)
 {out_assets_str}
 
-### Scope Exclusions & Ineligible Findings
+### Excluded Report Categories & Ineligible Weaknesses
 {excl_str}
 
 ### Applicable Testing Restrictions
@@ -770,9 +839,39 @@ class BriefGenerator:
                     f"Asset '{identifier}' has UNKNOWN submission eligibility (explicit human review required)"
                 )
 
-        excl_list = [e.get("attributes", {}).get("name") or str(e) for e in exclusions if isinstance(e, dict)]
+        # Parse exclusions preserving official HackerOne API fields (category, details, timestamps)
+        excl_list = []
+        excl_records = []
+        for e in exclusions:
+            if isinstance(e, dict):
+                e_attrs = e.get("attributes") or {}
+                category = (e_attrs.get("category") or e_attrs.get("name") or "").strip()
+                details = (e_attrs.get("details") or e_attrs.get("description") or "").strip()
+                c_at = e_attrs.get("created_at") or ""
+                u_at = e_attrs.get("updated_at") or ""
+                if category:
+                    rec = ScopeExclusionRecord(
+                        category=category,
+                        details=details,
+                        created_at=c_at,
+                        updated_at=u_at,
+                    )
+                    excl_records.append(rec.to_dict())
+                    excl_list.append(rec.summary())
+            elif isinstance(e, str) and e.strip():
+                excl_list.append(e.strip())
+
         if not excl_list:
-            excl_list = policy.ineligible_findings
+            excl_list = list(policy.ineligible_findings)
+
+        # Authoritative visibility
+        raw_state = (attrs.get("state") or "").lower()
+        if raw_state in ("public", "public_mode"):
+            visibility = ProgramVisibility.PUBLIC
+        elif raw_state in ("private", "private_mode", "soft_launched"):
+            visibility = ProgramVisibility.PRIVATE
+        else:
+            visibility = ProgramVisibility.UNKNOWN
 
         restrictions = [f"Prohibited: {p}" for p in policy.prohibited_attacks]
         custom_headers = {}
@@ -822,6 +921,8 @@ class BriefGenerator:
             else:
                 human_review_notes.append("No confirmed in-scope submission assets available from API.")
 
+        scope_fingerprint = temp_scope.fingerprint if temp_scope else ""
+
         return ProgramAuthorizationBrief(
             handle=handle,
             program_name=name,
@@ -832,12 +933,15 @@ class BriefGenerator:
             out_of_scope_assets=out_of_scope,
             structured_asset_entries=structured_entries,
             scope_exclusions=excl_list,
+            scope_exclusion_records=excl_records,
             testing_restrictions=restrictions,
             rate_limit=policy.rate_limit_rps,
             custom_headers=custom_headers,
             human_review_notes=sorted(set(human_review_notes)),
             recommended_first_target=first_target,
             reward_range="NOT RETRIEVED",
+            visibility=visibility,
+            scope_fingerprint=scope_fingerprint,
         )
 
     @staticmethod
@@ -856,7 +960,10 @@ class BriefGenerator:
                 "policy_hash": brief.policy_hash,
                 "approved_by": brief.approved_by,
                 "approved_at": brief.approved_at,
+                "approved_target": brief.approved_target,
+                "approved_scope_fingerprint": brief.approved_scope_fingerprint,
                 "custom_headers": brief.custom_headers,
+                "visibility": brief.visibility.value if hasattr(brief.visibility, "value") else str(brief.visibility),
             }
         )
 
