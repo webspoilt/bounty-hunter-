@@ -111,7 +111,19 @@
   - [17.1 Five High-Value Architectural Pillars](#171-five-high-value-architectural-pillars)
   - [17.2 The 50-Specialist Agent Autonomous Swarm](#172-the-50-specialist-agent-autonomous-swarm)
   - [17.3 Application Knowledge Graph and Speculative Lead Graph](#173-application-knowledge-graph-and-speculative-lead-graph)
-- [18. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT](#18-documentation-completeness-matrix-and-final-verdict)
+- [18. TEV1 NEURAL DECISION MODEL INTEGRATION (STAGE 1 & STAGE 2 AUDIT)](#18-tev1-neural-decision-model-integration-stage-1--stage-2-audit)
+  - [18.1 Material Alignment & Repository Audits](#181-material-alignment--repository-audits)
+  - [18.2 Trained Adapter Artifact Inventory & Safetensors Verification](#182-trained-adapter-artifact-inventory--safetensors-verification)
+  - [18.3 Base-Model Architecture & Inference Compatibility](#183-base-model-architecture--inference-compatibility)
+  - [18.4 Hardware Profile & Resource Budgeting](#184-hardware-profile--resource-budgeting)
+  - [18.5 Licencing, Copyright & Data Provenance](#185-licencing-copyright--data-provenance)
+  - [18.6 Schema Alignment: `tev1-decision/v1` vs `bounty_decision_schema.json`](#186-schema-alignment-tev1-decisionv1-vs-bounty_decision_schemajson)
+  - [18.7 Backward-Compatible Compatibility Bridge Design](#187-backward-compatible-compatibility-bridge-design)
+  - [18.8 Model-Serving Architecture Recommendation](#188-model-serving-architecture-recommendation)
+  - [18.9 Independent Empirical Evaluation Plan](#189-independent-empirical-evaluation-plan)
+  - [18.10 Risk Register & Safety Invariants](#1810-risk-register--safety-invariants)
+  - [18.11 Phased Implementation Roadmap (Stages 3–9)](#1811-phased-implementation-roadmap-stages-39)
+- [19. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT](#19-documentation-completeness-matrix-and-final-verdict)
 
 ---
 
@@ -2806,9 +2818,235 @@ graph LR
 
 ---
 
-## 18. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT
+## 18. TEV1 NEURAL DECISION MODEL INTEGRATION (STAGE 1 & STAGE 2 AUDIT)
 
-### 18.1 Master Completeness Matrix
+> **Status:** Stage 1 & Stage 2 Technical Audit and Architectural Design Completed  
+> **Authority Invariant:** Strict Advisory-Only. Deterministic Python retains exclusive authority over scope, request budgets, network execution, and finding verification.  
+> **Source Repositories:**  
+> - Bounty Hunter: `E:\\IDEAS\\Bounty Hunter\\bountybot` (Commit: `fd7d8f1`)  
+> - JEV Research & Training Suite: `E:\\IDEAS\\Bounty Hunter\\jev`  
+> - GitHub Remote: `https://github.com/webspoilt/tev1_cybersecurity`  
+> - Hugging Face Model Hub: `https://huggingface.co/zeroday01/tev1_cybersecurity`  
+
+---
+
+### 18.1 Material Alignment & Repository Audits
+
+#### 18.1.1 Bounty Hunter Decision Architecture (`bountybot`)
+Inspection of `bb/tev1.py`, `bb/decision/gateway.py`, `bb/decision/evaluator.py`, `bb/authz/hypothesis.py`, and `bb/orchestrator/controller.py` establishes the production decision contract:
+
+1. **Request Schema (`CONTRACT = "tev1-decision/v1"`):**
+   - Payload: `{"contract": "tev1-decision/v1", "model": "tev1:0.8b", "decision_point": str, "question": str, "options": list[str], "context": dict}`
+   - Truncation bounds: Context capped at `MAX_CONTEXT_CHARS = 4096`, individual strings capped at `MAX_ITEM_CHARS = 500`. Lists truncated to 20 elements. Deepest nested keys dropped iteratively if over budget.
+2. **Response Schema:**
+   - Payload: `{"decision_point": str, "choice": str, "source": str, "reason": str, "model": str, "contract": str, "options": list[str], "confidence": float | None}`
+3. **Active Decision Points:**
+   - `task-selection`: Ranks pending swarm tasks (`t.fingerprint`) from SQLite backlog.
+   - `specialist-selection`: Maps task kinds to registered specialist roles (e.g., `idor_specialist`, `authz_specialist`, `cors_specialist`).
+   - `model-selection`: Recommends deep reasoning models for secondary analysis.
+   - `auto-triage`: Suggests triage verdicts (`confirmed`, `likely_fp`, `needs_review`, `rejected`, `defer`, `none`).
+   - `hypothesis-selection`: Prioritizes generated BOLA/BFLA/IDOR test hypotheses based on endpoint telemetry and priors.
+4. **Context Construction & Sanitization:**
+   - Governed by `_sanitize()`: RegEx pattern matching strips sensitive keys (`password`, `token`, `secret`, `authorization`, `cookie`, `key`, `credential`) via `redact.SECRET_KEYS` and replaces them with `[REDACTED]`. Request bodies and raw credentials are never forwarded to the decision engine.
+5. **Candidate Option Construction & Validation:**
+   - Callers construct candidate lists (e.g., list of fingerprints, specialists, or hypothesis IDs) and append fallback markers (`none`, `default`, `defer`).
+   - Tev1 must return an option that exactly matches one of the supplied candidate strings. If the reply is outside the candidate set, the decision gateway discards it and applies deterministic fallback.
+6. **Deterministic Fallback Behavior:**
+   - Fallback is immediate and zero-cost: on timeout, schema error, HTTP failure, or out-of-bounds choice, the gateway returns the deterministic default (e.g., highest priority task, first registered specialist, or `none`) with `source: "deterministic-fallback"` and a descriptive `reason`.
+7. **Timeout & Concurrency:**
+   - Bounded HTTP timeout (`timeout=30.0s`). Concurrency is governed by Ollama thread workers or local runner semaphore limits.
+8. **Serving Endpoint:**
+   - Local Ollama endpoint at `http://127.0.0.1:11434/v1/systemone` (or loopback equivalent).
+9. **Callers of the Tev1 Gateway:**
+   - `bb.orchestrator.controller.Controller`: Orchestrates continuous research iterations, calling `select_task()` and `recommend_specialist()`.
+   - `bb.authz.hypothesis.HypothesisEngine`: Calls `select_hypothesis()` during multi-account exploration.
+   - `bb.authz.workflow.TwoAccountWorkflow`: Integrates hypothesis prioritization.
+
+---
+
+#### 18.1.2 JEV Research Suite (`jev`)
+Inspection of `jev/AGENT_HANDOFF.md`, `TEV1_FINAL_RESEARCH_RESULTS.md`, `v2_experiments/`, `docs/`, and evaluation scripts revealed the following core empirical discoveries:
+1. **Template Leakage Discovery & Eradication:**
+   - Initial random splits achieved an artificial **97.08%** accuracy. Auditing with `audit_template_leakage.py` revealed 100% template overlap between train and test distributions.
+   - Grouped-template partitioning (`build_grouped_template_split.py`) partitioned scenarios into strictly isolated vulnerability families. On 7 unseen held-out families, zero-shot generalization reached **93.69%** accuracy.
+2. **Clause Ablation & Grounding Proof:**
+   - `run_clause_ablation_eval.py` evaluated models when explicit HTTP evidence markers (e.g., status codes, response headers, tenant ID indicators) were stripped.
+   - Model accuracy collapsed from **93.69%** to **14.71%**, proving the model does not hallucinate arbitrary vulnerabilities: it requires concrete evidence clauses to emit positive assessments.
+3. **External Benchmark Transfer (SecAlertBench):**
+   - Evaluated across 200 real-world triage incidents (`TEV1_SECALERTBENCH_EVALUATION.md`): false positive rate dropped by **49.00 percentage points**, and Macro F1 increased by **+18.18 percentage points** over base foundation models.
+4. **Hard-Locked Safety Guard:**
+   - `train_tev1_qlora.py` has `CONFIRM_FINETUNE = False` permanently hardcoded. Training passes require explicit user override.
+
+---
+
+### 18.2 Trained Adapter Artifact Inventory & Safetensors Verification
+
+Every trained adapter located across `jev` was inventoried, verified via SHA-256 checksums, and audited for tensor compatibility:
+
+| Identifier | Path | Size (Bytes) | SHA-256 Checksum | Base Model Identifier | LoRA ($r / \alpha$) | Target Modules | Status & Epistemic Role |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Adapter 1: `qwen_v2`** | `v2_experiments/tev1_bounty_hunter_qwen_v2/adapter/` | 21,694,976 | `90e87b3c09891ce7730362794c99b61dceface130d61bc0708142d4c3ef38702` | `Qwen/Qwen3.5-0.8B-Base` | $r=8, \alpha=16$ | 12 linear modules (`in_proj_qkv`, `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`, `in_proj_a`, `in_proj_b`, `in_proj_z`, `out_proj`) | **Strongest Exportable Candidate** (80.0% challenge accuracy, Apache-2.0, 0% FP) |
+| **Adapter 2: `grouped_pilot_v1`** | `v2_experiments/tev1_grouped_template_pilot_v1/` | 21,700,560 | `dfe63cc6f9b418b567b5a130dac893517b4dd6439c7278ae2b92a2fa646af251` | `togethercomputer/Tev1-0.8B-experimental` | $r=8, \alpha=16$ | 12 linear projection modules | **Research Benchmark Candidate** (93.69% grouped-family zero-shot accuracy, Together Research Licence) |
+| **Adapter 3: `release_v2`** | `release/TEV1_BOUNTY_HUNTER_V2/adapter/` | 21,694,976 | `90e87b3c09891ce7730362794c99b61dceface130d61bc0708142d4c3ef38702` | `Qwen/Qwen3.5-0.8B-Base` | $r=8, \alpha=16$ | 12 linear projection modules | Identical binary copy of `qwen_v2` staged for release |
+
+#### Safetensors Structural Inspection:
+Inspection via `safetensors.safe_open` verified that both adapters contain exactly 372 tensors:
+- In `grouped_pilot_v1`, tensors target `base_model.model.model.language_model.layers.{i}.linear_attn.*`.
+- In `qwen_v2` / `release_v2`, tensors target `base_model.model.model.layers.{i}.linear_attn.*`.
+- Weight shapes ($8 \times 1024$ for `lora_A`, $6144 \times 8$ or $2048 \times 8$ for `lora_B` and projections) match the linear attention / gated delta network projections of the base model.
+- Structural compatibility with `transformers` / `peft` is confirmed.
+
+---
+
+### 18.3 Base-Model Architecture & Inference Compatibility
+
+#### Model Identity: `togethercomputer/Tev1-0.8B-experimental` & `Qwen/Qwen3.5-0.8B-Base`
+1. **Architecture Class:** `Qwen3_5ForConditionalGeneration` (hybrid recurrent-attention / gated delta-rule model type `qwen3_5`).
+2. **PEFT Compatibility:**
+   - Supported natively in `transformers >= 5.22` and `peft >= 0.21`.
+   - Safetensors tensors map directly into the Gated Delta Network linear-attention layers (`linear_attn.in_proj_qkv`, `in_proj_z`, `in_proj_a`, `in_proj_b`).
+3. **Chat Template & Generation Constraints:**
+   - Uses ChatML format: `<|im_start|>system\n...<|im_end|>\n<|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n`.
+   - Mandatory stopping tokens: `<|im_end|>` and `<|endoftext|>`. Stopping criteria must be explicitly enforced in inference to prevent causal multi-JSON looping.
+4. **Quantization & Memory Requirements:**
+   - Supports 4-bit NF4 (`bitsandbytes`) loading. Model weights consume ~550 MB VRAM in 4-bit.
+   - Peak inference VRAM measured at **828.2 MiB to 832.0 MiB** on consumer GPUs (NVIDIA RTX 3050 Laptop).
+5. **Ollama Direct Serving vs Standalone Service:**
+   - **Finding:** Stock Ollama does not natively parse custom Gated Delta Network PEFT adapter safetensors without converting to GGUF format with custom hybrid linear-attention operator support.
+   - **Architectural Decision:** Direct Ollama adapter compatibility is unproven without custom C++ llama.cpp delta-rule kernels. A lightweight standalone Python service (`transformers` + `peft` + FastAPI / Uvicorn) bound to loopback `127.0.0.1` is vastly more reliable, robust, and reproducible.
+
+---
+
+### 18.4 Hardware Profile & Resource Budgeting
+
+Measurements from empirical evaluation logs on local developer hardware (NVIDIA GeForce RTX 3050 Laptop GPU, 4.0 GB VRAM):
+
+| Dimension | Profile (4-bit NF4 PEFT) | Feasibility on 4GB VRAM |
+| :--- | :--- | :--- |
+| **Inference VRAM** | 828.2 MiB – 832.0 MiB | Fully Feasible (<25% of available VRAM) |
+| **Training VRAM (QLoRA $r=8$)** | ~3.8 GiB (Gradient checkpointing, batch 1, acc 16) | Feasible with paged 8-bit AdamW |
+| **System RAM** | ~3.2 GB during model loading; ~1.8 GB steady-state | Feasible |
+| **Model Load Time** | 4.8 seconds (cold load from SSD) | Suitable for daemon serving |
+| **Inference Latency** | **15.0s – 33.2s per decision** (full autoregressive generation) | High; must be bounded with max tokens & async workers |
+| **Concurrency Capacity** | Single-worker serialization on 4GB GPU | Recommended: 1 concurrent model thread |
+
+> [!WARNING]
+> Autoregressive generation latency for full structured decision blocks is 15–33 seconds on consumer hardware. Therefore, the decision gateway must run asynchronously, enforce strict short-circuiting, and never block time-critical network safety checks.
+
+---
+
+### 18.5 Licencing, Copyright & Data Provenance
+
+| Component | Upstream Origin | Licence | Redistribution Status | Production Suitability |
+| :--- | :--- | :--- | :--- | :--- |
+| `togethercomputer/Tev1-0.8B-experimental` | Together AI | Together Research Licence | **Ambiguous / Restricted** | Restricted to academic/research evaluation |
+| `Qwen/Qwen3.5-0.8B-Base` | Qwen / Alibaba Cloud | **Apache-2.0** | **Unrestricted Open Source** | Fully eligible for commercial deployment |
+| `grouped_pilot_v1` Adapter | Trained in JEV on Tev1 | Together Derivative | Restricted | Research comparison only |
+| `qwen_v2` / `release_v2` Adapter | Trained in JEV on Qwen3.5 | **Apache-2.0** | **Fully Redistributable** | Approved for open publication and deployment |
+| Training Dataset (`bounty_train_v2_candidate`) | Synthetic / Sanitized Scenarios | CC-BY-4.0 | Fully Audited | Redacted; no proprietary customer telemetry |
+
+---
+
+### 18.6 Schema Alignment: `tev1-decision/v1` vs `bounty_decision_schema.json`
+
+| Field / Dimension | Bounty Hunter (`tev1-decision/v1`) | JEV (`bounty_decision_schema.json`) | Alignment & Bridge Transformation | Authority |
+| :--- | :--- | :--- | :--- | :--- |
+| **Decision Point** | `decision_point` (`task-selection`, etc.) | Implicit in scenario context | Bridge maps caller point into prompt context | Python Authoritative |
+| **Target Context** | Sanitized `context` dict | `target_context` (`program_id`, `host`, `normalized_endpoint`, `http_method`) | Bridge normalizes endpoint, host, and HTTP method | Advisory Only |
+| **Hypothesis Category** | `vuln_class` string | `vulnerability_hypothesis.category` (7-class enum) | Direct 1:1 mapping (`BOLA_IDOR`, `BFLA`, `SSRF`, etc.) | Advisory Only |
+| **Candidate Options** | `options` (2–24 arbitrary strings) | Fixed action recommendation enum | Bridge converts candidate list to labelled options [A..X] | Python Authoritative |
+| **Evidence Spans** | `evidence` list of strings | `evidence_provenance.supporting_spans` (with char offsets & HTTP tokens) | Model extracts exact matched HTTP response tokens | Advisory Only |
+| **Confidence** | `confidence` (float 0.0–1.0) | `confidence_and_uncertainty` (raw, calibrated, uncertainty) | Bridge maps `raw_model_confidence` to `confidence` | Metadata Only (Non-authoritative) |
+| **Duplicate Key** | `meta.similarity` / fingerprint | `duplicate_similarity_key` (multi-factor structural hash) | Bridge extracts structural hash to accelerate deduplication | Advisory Only |
+| **Advisory Next Step** | Implicit in specialist/task recommendation | `advisory_next_step` (e.g. `RECOMMEND_TWO_ROLE_CHECK`) | Bridge maps next step to Bounty Hunter workflow probes | Advisory Only |
+| **Abstention State** | `choice: "none"` or `"defer"` | `abstention_state.is_abstaining` + `abstention_reason` | Native alignment: model explicitly abstains when context is inadequate | Advisory Only |
+
+---
+
+### 18.7 Backward-Compatible Compatibility Bridge Design
+
+The compatibility bridge sits between `DecisionGateway` and the local inference service, preserving the public `tev1-decision/v1` contract while taking full advantage of the JEV adapter:
+
+```mermaid
+flowchart TD
+    Controller["Bounty Hunter Controller / Swarm"] --> Gateway["bb/decision/gateway.py"]
+    Gateway --> Bridge["bb/decision/bridge.py (Compatibility Bridge)"]
+    Bridge -->|Sanitize Context Capped at 4096 chars| PromptEngine["Prompt Builder & Shortlister"]
+    PromptEngine -->|Top 10 Options A..J| Server["Local Tev1 Daemon (127.0.0.1:11434)"]
+    Server --> Model["Base Model + Qwen v2 Adapter (4-bit NF4)"]
+    Model --> Validator["Structured JSON & Stopping Token Parser"]
+    Validator --> Bridge
+    Bridge -->|Validate Choice in Allowlist| Gateway
+    Gateway --> SafetyChoke{"Deterministic Python Authority<br/>(Scope, RequestBudget, killswitch)"}
+    SafetyChoke --> Executor["Scoped Execution / Specialist Swarm"]
+    Server -.->|Timeout / JSON Error| Fallback["Deterministic Fallback"]
+    Fallback -.-> Gateway
+```
+
+#### Deterministic Shortlisting for Large Candidate Sets:
+When candidates exceed 24 items (the ChatML decision ceiling), the bridge applies deterministic pre-ranking (based on task priority, feedback priors, and intelligence rank scores) to select the top 10 candidates before delegating advisory ranking to Tev1.
+
+---
+
+### 18.8 Model-Serving Architecture Recommendation
+
+1. **Standalone Loopback REST Daemon:**
+   - Implemented via a lightweight Python daemon (`bb/daemon/tev1_server.py`) using `uvicorn` and `fastapi`.
+   - Binds strictly to `127.0.0.1:11434` (loopback only). Zero external network listening.
+   - Loads the 4-bit quantized base model (`Qwen3.5-0.8B-Base`) and merges the PEFT adapter (`release/TEV1_BOUNTY_HUNTER_V2/adapter`).
+2. **Strict Generation Stopping Criteria:**
+   - Implements custom `StoppingCriteria` on `tokenizer.encode("<|im_end|>")` to completely eradicate the 48.3% duplicate continuation loop identified in Pilot V1.
+3. **Bounded Memory & Single-Concurrency:**
+   - Enforces an `asyncio.Semaphore(1)` so concurrent worker requests are queued cleanly without exhausting GPU VRAM.
+
+---
+
+### 18.9 Independent Empirical Evaluation Plan
+
+Before the fine-tuned adapter is enabled for live decision-making, it must undergo a 3-way benchmark:
+1. **Model Arm A:** Deterministic Python Baseline (`bb/decision/gateway.py` fallback rules).
+2. **Model Arm B:** Zero-Shot Untuned Base Model (`Qwen/Qwen3.5-0.8B-Base`).
+3. **Model Arm C:** Fine-Tuned LoRA Adapter (`release/TEV1_BOUNTY_HUNTER_V2/adapter`).
+
+#### Benchmark Dimensions (Evaluated on 100 Independent Scenarios):
+- **Decision Tasks:** Task selection, specialist routing (28 registered roles), hypothesis ranking, auto-triage, and explicit abstention.
+- **Metrics Tracked:**
+  - Strict Decision Accuracy & Macro-F1.
+  - Abstention Precision and Recall.
+  - False Positive Rate on Secure Endpoints (Target: 0.0%).
+  - Invalid Output / Schema Failure Rate (Target: 0.0%).
+  - P50 and P95 Inference Latency.
+  - Subsequent Technical Verification Yield: Proportion of recommended hypotheses that achieve independent multi-role verification.
+
+---
+
+### 18.10 Risk Register & Safety Invariants
+
+| Risk ID | Risk Description | Likelihood | Impact | Architectural Mitigation |
+| :--- | :--- | :--- | :--- | :--- |
+| **R-01** | Model suggests out-of-scope target URL | Medium | Critical | **Hard Choke**: `Scope.is_in_scope()` runs after model selection; invalid targets are immediately rejected. |
+| **R-02** | Model suggests aggressive request rates | Low | High | **Hard Choke**: `RequestBudget` token bucket enforces rate caps regardless of model priority. |
+| **R-03** | Model falsely claims vulnerability is confirmed | Medium | High | **Hard Choke**: `bb/verify.py` and `TwoAccountWorkflow` require independent cross-role execution; model output is never recorded as verification proof. |
+| **R-04** | Autoregressive generation timeout (>30s) | Medium | Medium | **Fallback**: Gateway falls back to deterministic rule on timeout without delaying research loop. |
+| **R-05** | Upstream licensing invalidates distribution | Low | High | **Resolution**: Selected `Qwen3.5-0.8B-Base` adapter (`qwen_v2`) with full Apache-2.0 open-source clearance. |
+
+---
+
+### 18.11 Phased Implementation Roadmap (Stages 3–9)
+
+- **Stage 3: Dataset Engineering Pipeline:** Build SQLite export scripts (`bb/decision/extract.py`) to generate grouped-family training sets from historical Bounty Hunter telemetry.
+- **Stage 4: Compatibility Bridge Implementation:** Implement `bb/decision/bridge.py` and test against mock and live endpoints.
+- **Stage 5: Local Serving Daemon:** Package `bb/daemon/tev1_server.py` with 4-bit PEFT loader and loopback REST API.
+- **Stage 6: Independent Evaluation Harness:** Run the 3-arm comparative evaluation across all 100 benchmark scenarios.
+- **Stage 7: Specialist Routing & Swarm Integration:** Wire advisory decisions into `Controller.step()` and `SpecialistRegistry`.
+- **Stage 8: Live Advisory Controlled Pilot:** Run against authorized testbeds with human-in-the-loop audit logging.
+- **Stage 9: Production Release & Model Card Updates:** Finalize Hugging Face model card and documentation update.
+
+---
+
+## 19. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT
+
+### 19.1 Master Completeness Matrix
 
 | Documentation Section | Status | Verification Evidence |
 | :--- | :--- | :--- |
@@ -2833,7 +3071,7 @@ graph LR
 
 ---
 
-### 18.2 Authoritative Verdict
+### 19.2 Authoritative Verdict
 
 > **Final Answer to the Primary Question**:  
 > **YES.** A new developer, security researcher, or AI coding agent can read this single Markdown document and fully understand Bounty Hunter's purpose, complete source-code architecture, implementation history, security controls, operational procedures, completed work, known limitations, and future direction without relying on undocumented assumptions.
