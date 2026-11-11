@@ -8,6 +8,45 @@ from pathlib import Path
 from bb import __version__
 
 ROOT = Path(__file__).resolve().parent.parent
+ENV_PATH = ROOT / ".env"
+
+
+def load_project_env(override: bool = False) -> Path | None:
+    """Discover and load project .env file regardless of current working directory.
+
+    Precedence order:
+      - By default (override=False), explicit shell environment variables take precedence
+        over .env values. If an environment variable is already set in the current shell/process,
+        it will not be overwritten by .env.
+      - If override=True, values in .env will override existing environment variables.
+    """
+    if ENV_PATH.is_file():
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(dotenv_path=ENV_PATH, override=override)
+            return ENV_PATH
+        except ImportError:
+            # Fallback simple parser if python-dotenv is not installed
+            try:
+                content = ENV_PATH.read_text(encoding="utf-8")
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    k = k.strip()
+                    v = v.strip().strip("'\"")
+                    if override or k not in os.environ:
+                        os.environ[k] = v
+                return ENV_PATH
+            except Exception:
+                pass
+    return None
+
+
+# Load project .env at startup
+load_project_env(override=False)
+
 DATA = Path(os.environ.get("BB_DATA", ROOT / "data"))
 
 DB_PATH = DATA / "bountybot.db"

@@ -9,6 +9,8 @@ from bb.models import Finding
 def test_client_requires_credentials(monkeypatch):
     monkeypatch.setattr("bb.h1.H1_USERNAME", "")
     monkeypatch.setattr("bb.h1.H1_TOKEN", "")
+    monkeypatch.setenv("H1_USERNAME", "")
+    monkeypatch.setenv("H1_TOKEN", "")
     with pytest.raises(H1Error):
         H1Client(username="", token="")
 

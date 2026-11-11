@@ -41,8 +41,8 @@ from bb.scope import Scope
 def test_client_requires_credentials(monkeypatch):
     monkeypatch.setattr("bb.h1.H1_USERNAME", "")
     monkeypatch.setattr("bb.h1.H1_TOKEN", "")
-    monkeypatch.delenv("H1_USERNAME", raising=False)
-    monkeypatch.delenv("H1_TOKEN", raising=False)
+    monkeypatch.setenv("H1_USERNAME", "")
+    monkeypatch.setenv("H1_TOKEN", "")
     with pytest.raises(H1AuthError) as exc:
         H1Client(username="", token="")
     assert "credentials missing" in str(exc.value).lower()

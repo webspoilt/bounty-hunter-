@@ -780,6 +780,49 @@ def cmd_h1(args) -> int:
     ensure_h1_dirs()
     action = args.action
 
+    if action == "configure":
+        import getpass
+        from bb.h1 import configure_credentials
+        print("=" * 65)
+        print("HACKERONE CREDENTIAL CONFIGURATION")
+        print("=" * 65)
+        print("Enter your HackerOne researcher credentials.")
+        print("They will be saved in the project's .env file and loaded automatically.\n")
+
+        default_user = os.environ.get("H1_USERNAME", "")
+        prompt_user = f"HackerOne Username [{default_user}]: " if default_user else "HackerOne Username: "
+        try:
+            username = input(prompt_user).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nConfiguration cancelled.")
+            return 1
+
+        if not username and default_user:
+            username = default_user
+
+        if not username:
+            print("[!] Username cannot be empty.")
+            return 1
+
+        try:
+            token = getpass.getpass("HackerOne API Token (input hidden): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nConfiguration cancelled.")
+            return 1
+
+        if not token:
+            print("[!] API token cannot be empty.")
+            return 1
+
+        try:
+            env_file = configure_credentials(username, token)
+            print(f"\n[+] Credentials saved securely to: {env_file}")
+            print("[+] Environment loaded. Future sessions will authenticate automatically.")
+            return 0
+        except Exception as exc:
+            print(f"\n[!] Failed to save credentials: {exc}")
+            return 1
+
     if action == "programs":
         print("[*] Fetching accessible HackerOne programs via API...")
         try:
@@ -1782,6 +1825,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     h1_p = sub.add_parser("h1", help="HackerOne program discovery, guideline reading, authorization & reports")
     h1_sub = h1_p.add_subparsers(dest="action", required=True)
+
+    h1_cfg = h1_sub.add_parser("configure", help="permanently configure HackerOne API credentials in local .env")
+    h1_cfg.set_defaults(func=cmd_h1)
 
     h1_prog = h1_sub.add_parser("programs", help="discover and rank accessible bug bounty programs")
     h1_prog.add_argument("--limit", type=int, default=25, help="max programs to display")

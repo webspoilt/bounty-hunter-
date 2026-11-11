@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -30,7 +31,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from bb.config import DATA, H1_API, H1_TOKEN, H1_USERNAME, now_iso
+from bb.config import DATA, ENV_PATH, H1_API, H1_TOKEN, H1_USERNAME, ROOT, load_project_env, now_iso
 from bb.models import Finding
 from bb.orchestrator.profile import AutonomyLevel, ProfileValidity, ProgramProfile
 from bb.scope import Scope, normalize_host, parse_target
@@ -68,6 +69,85 @@ def sanitize_handle(handle: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", (handle or "").strip())
     cleaned = cleaned.strip("._")
     return cleaned or "unknown_program"
+
+
+def configure_credentials(username: str, token: str, env_path: Path | None = None) -> Path:
+    """Save HackerOne credentials permanently in the project .env file.
+
+    Features:
+    - Atomically updates/creates the .env file.
+    - Preserves other existing environment variables in .env.
+    - Never prints or logs the token.
+    - Restricts Windows file permissions where practical.
+    - Automatically updates os.environ for the current process.
+    """
+    target = env_path or ENV_PATH
+    username = username.strip()
+    token = token.strip()
+
+    if not username:
+        raise ValueError("HackerOne username cannot be empty")
+    if not token:
+        raise ValueError("HackerOne API token cannot be empty")
+
+    existing_lines: list[str] = []
+    if target.is_file():
+        try:
+            existing_lines = target.read_text(encoding="utf-8").splitlines()
+        except Exception:
+            existing_lines = []
+
+    new_lines: list[str] = []
+    found_username = False
+    found_token = False
+
+    for line in existing_lines:
+        stripped = line.strip()
+        if stripped.startswith("H1_USERNAME="):
+            new_lines.append(f"H1_USERNAME={username}")
+            found_username = True
+        elif stripped.startswith("H1_TOKEN="):
+            new_lines.append(f"H1_TOKEN={token}")
+            found_token = True
+        else:
+            new_lines.append(line)
+
+    if not found_username:
+        new_lines.append(f"H1_USERNAME={username}")
+    if not found_token:
+        new_lines.append(f"H1_TOKEN={token}")
+
+    content = "\n".join(new_lines).strip() + "\n"
+
+    # Write atomically via temp file
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.replace(target)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
+
+    # Restrict file permissions on Windows where practical
+    try:
+        current_user = os.environ.get("USERNAME")
+        if current_user and sys.platform == "win32":
+            import subprocess
+            subprocess.run(
+                ["icacls", str(target), "/inheritance:r", "/grant:r", f"{current_user}:(R,W)"],
+                capture_output=True,
+                check=False,
+            )
+    except Exception:
+        pass
+
+    # Update in-memory environment immediately
+    os.environ["H1_USERNAME"] = username
+    os.environ["H1_TOKEN"] = token
+
+    return target
 
 
 class H1Error(RuntimeError):
@@ -108,12 +188,21 @@ class H1Client:
     def __init__(self, username: str = "", token: str = "",
                  api_base: str = H1_API, timeout: float = 30.0,
                  max_retries: int = 3, min_delay: float = 0.5):
-        self.username = username or os.environ.get("H1_USERNAME") or H1_USERNAME
-        self.token = token or os.environ.get("H1_TOKEN") or H1_TOKEN
+        # Ensure project .env is discovered & loaded into os.environ if neither is set
+        if "H1_USERNAME" not in os.environ and "H1_TOKEN" not in os.environ:
+            if ENV_PATH.is_file():
+                load_project_env(override=False)
+
+        # Precedence: Explicit constructor arguments > environment variables > module defaults
+        from bb import h1 as _h1_mod
+        self.username = username or os.environ.get("H1_USERNAME") or getattr(_h1_mod, "H1_USERNAME", "")
+        self.token = token or os.environ.get("H1_TOKEN") or getattr(_h1_mod, "H1_TOKEN", "")
         if not self.username or not self.token:
             raise H1AuthError(
-                "HackerOne credentials missing. Set H1_USERNAME and H1_TOKEN environment variables "
-                "or generate an API token from hackerone.com/settings/api_token"
+                "HackerOne credentials missing. Run:\n\n"
+                "  bb h1 configure\n\n"
+                "to permanently configure your HackerOne username and API token, "
+                "or set H1_USERNAME and H1_TOKEN in your environment."
             )
         self.api_base = api_base.rstrip("/")
         # Verify host restriction
