@@ -1,13 +1,15 @@
 """HackerOne acquisition, guideline reader, ranking and research pipeline.
 
-Phase 2 - 8 implementation:
+Phase 2 - 10 implementation & repair:
 - Read-only official HackerOne API connector (programs, program, structured_scopes,
   scope_exclusions, weaknesses) with pagination, rate-limit & Retry-After handling.
-- Program discovery and multi-factor ranking.
+- Program discovery and multi-factor ranking. Honest 'Not loaded' state when scope
+  is not fetched in list view.
 - Guideline parsing: preserves full verbatim policy text + machine-readable rules.
 - Policy hash, source, retrieval timestamp, ambiguity tracking.
-- Browser Research Agent for guideline inspection & screenshot/HAR evidence capture.
+- Browser Research Agent for supplementary guideline inspection & screenshot evidence.
 - Program Authorization Brief card generation and explicit human review gating.
+- Safe path sanitization preventing directory traversal on program handles.
 - H1 draft report preparation with demonstrated impact and verified steps.
 - Safe integration with existing Scope, ScopedClient, RequestBudget, Store, and Controller.
 """
@@ -47,6 +49,13 @@ def ensure_h1_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+def sanitize_handle(handle: str) -> str:
+    """Sanitize program handle to prevent path traversal or invalid filesystem characters."""
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]", "_", (handle or "").strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "unknown_program"
+
+
 class H1Error(RuntimeError):
     pass
 
@@ -62,7 +71,7 @@ class H1AuthError(H1Error):
 
 
 # ---------------------------------------------------------------------------
-# PHASE 2: HACKERONE API CONNECTOR
+# PHASE 2 & 3: HACKERONE API CONNECTOR
 # ---------------------------------------------------------------------------
 
 class H1Client:
@@ -190,8 +199,9 @@ class H1Client:
 
     def program(self, handle: str) -> dict:
         """GET /v1/hackers/programs/{handle}: Retrieve program details and policy."""
+        safe_handle = sanitize_handle(handle)
         last_exc = None
-        for path in (f"/hackers/programs/{handle}", f"/programs/{handle}"):
+        for path in (f"/hackers/programs/{safe_handle}", f"/programs/{safe_handle}"):
             try:
                 return self._get(path)
             except H1Error as exc:
@@ -200,44 +210,48 @@ class H1Client:
 
     def structured_scopes(self, handle: str) -> list[dict]:
         """GET /v1/hackers/programs/{handle}/structured_scopes: Retrieve in-scope and out-of-scope assets."""
+        safe_handle = sanitize_handle(handle)
         try:
-            return self._paginate(f"/hackers/programs/{handle}/structured_scopes")
+            return self._paginate(f"/hackers/programs/{safe_handle}/structured_scopes")
         except H1Error as exc:
             # Fallback to embedded relationship in program()
-            prog = self.program(handle)
+            prog = self.program(safe_handle)
             rel = (prog.get("data", {}).get("relationships") or {}).get("structured_scopes") or {}
             items = rel.get("data") or []
             if items:
                 return items
-            log.warning(f"Could not fetch structured scopes endpoint for {handle}: {exc}")
+            log.warning(f"Could not fetch structured scopes endpoint for {safe_handle}: {exc}")
             return []
 
     def scope_exclusions(self, handle: str) -> list[dict]:
         """GET /v1/hackers/programs/{handle}/scope_exclusions: Retrieve excluded vulnerability categories."""
+        safe_handle = sanitize_handle(handle)
         try:
-            return self._paginate(f"/hackers/programs/{handle}/scope_exclusions")
+            return self._paginate(f"/hackers/programs/{safe_handle}/scope_exclusions")
         except H1Error as exc:
-            log.debug(f"Scope exclusions not available for {handle}: {exc}")
+            log.debug(f"Scope exclusions not available for {safe_handle}: {exc}")
             return []
 
     def weaknesses(self, handle: str) -> list[dict]:
         """GET /v1/hackers/programs/{handle}/weaknesses: Retrieve eligible/ineligible weakness categories."""
+        safe_handle = sanitize_handle(handle)
         try:
-            return self._paginate(f"/hackers/programs/{handle}/weaknesses")
+            return self._paginate(f"/hackers/programs/{safe_handle}/weaknesses")
         except H1Error as exc:
-            log.debug(f"Weaknesses endpoint not available or not supported for {handle}: {exc}")
+            log.debug(f"Weaknesses endpoint not available or not supported for {safe_handle}: {exc}")
             return []
 
     def scope(self, handle: str) -> Scope:
         """Construct a validated Bounty Hunter Scope object from program structured scopes."""
-        prog = self.program(handle)
+        safe_handle = sanitize_handle(handle)
+        prog = self.program(safe_handle)
         prog_data = prog.get("data", {})
         rel = (prog_data.get("relationships") or {}).get("structured_scopes") or {}
         entries = [item.get("attributes", {}) for item in (rel.get("data") or [])]
 
         if not entries:
-            # Fallback to dedicated endpoint if relationship had no data
-            entries_data = self.structured_scopes(handle)
+            # Dedicated endpoint
+            entries_data = self.structured_scopes(safe_handle)
             entries = [e.get("attributes", {}) for e in entries_data if isinstance(e, dict)]
 
         if not entries:
@@ -255,7 +269,7 @@ class H1Client:
 
 
 # ---------------------------------------------------------------------------
-# PHASE 3: PROGRAM DISCOVERY AND RANKING
+# PHASE 4 & 5: PROGRAM DISCOVERY AND RANKING
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -272,15 +286,19 @@ class RankedProgram:
     open_scope: bool
     state: str
     rating: float
+    assets_loaded: bool = False
     reasons: list[str] = field(default_factory=list)
     raw_attributes: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         bounty_str = "💰 BOUNTY" if self.offers_bounties else "FREE / VDP"
+        if not self.assets_loaded:
+            assets_str = "Assets: Not loaded in list view"
+        else:
+            assets_str = f"Assets: {self.asset_count:2d} (Web: {self.web_asset_count:2d}, Wildcards: {self.wildcard_count:2d})"
         return (
-            f"[{self.bounty_score:4.1f}] {self.handle:<22} {bounty_str:<11} "
-            f"Assets: {self.asset_count:2d} (Web: {self.web_asset_count:2d}, Wildcards: {self.wildcard_count:2d}) "
-            f"State: {self.submission_state}"
+            f"[{self.bounty_score:4.1f}] {self.handle:<24} {bounty_str:<11} "
+            f"{assets_str:<32} State: {self.submission_state}"
         )
 
 
@@ -289,9 +307,9 @@ class ProgramDiscoveryRanker:
     
     Formula considers:
     1. Monetary bounty offering (+40 pts)
-    2. Number and surface of web & API assets (+5 pts per web asset, +10 per wildcard, max 30)
-    3. Active submission state (+15 pts for open, -100 for paused/closed)
-    4. Scope clarity and coverage
+    2. Number and surface of web & API assets (+4 pts per web asset, +6 per wildcard, max 30)
+    3. Active submission state (+15 pts for open, -50 for paused, -100 for closed)
+    4. Program rating / reputation (+0 to +10 pts)
     5. Maximum reported severity (Critical = +10, High = +5)
     
     Safety Invariant: Ranking is purely advisory; ranking high never grants testing authorization.
@@ -310,7 +328,10 @@ class ProgramDiscoveryRanker:
 
         # Count structured scopes if present in relationships
         rel = (prog.get("relationships") or {}).get("structured_scopes") or {}
-        scope_data = rel.get("data") or []
+        scope_data = rel.get("data")
+        assets_loaded = scope_data is not None
+        scope_data = scope_data or []
+
         asset_count = len(scope_data)
         web_count = 0
         wildcard_count = 0
@@ -319,7 +340,7 @@ class ProgramDiscoveryRanker:
         for s in scope_data:
             s_attrs = s.get("attributes", {})
             atype = (s_attrs.get("asset_type") or "").upper()
-            if atype in ("URL", "API"):
+            if atype in ("URL", "API", "DOMAIN"):
                 web_count += 1
             elif atype == "WILDCARD":
                 wildcard_count += 1
@@ -351,20 +372,25 @@ class ProgramDiscoveryRanker:
             reasons.append("Program closed (-100)")
 
         # Web attack surface
-        surface_pts = min(web_count * 4.0 + wildcard_count * 6.0, 30.0)
-        score += surface_pts
-        if surface_pts > 0:
-            reasons.append(f"Web/API attack surface: {web_count} web targets (+{surface_pts:.1f})")
+        if assets_loaded:
+            surface_pts = min(web_count * 4.0 + wildcard_count * 6.0, 30.0)
+            score += surface_pts
+            if surface_pts > 0:
+                reasons.append(f"Web/API attack surface: {web_count} web targets (+{surface_pts:.1f})")
+            if max_sev == "critical":
+                score += 10.0
+                reasons.append("Accepts critical findings (+10)")
+            elif max_sev == "high":
+                score += 5.0
+                reasons.append("Accepts high findings (+5)")
+        else:
+            reasons.append("Assets not loaded in list view (inspect with `bb h1 brief`)")
 
-        if max_sev == "critical":
-            score += 10.0
-            reasons.append("Accepts critical findings (+10)")
-        elif max_sev == "high":
-            score += 5.0
-            reasons.append("Accepts high findings (+5)")
-
+        # Program rating (0.0 to 5.0 -> up to +10 pts)
         if rating > 0:
-            score += min(rating * 2.0, 5.0)
+            rating_pts = min(rating * 2.0, 10.0)
+            score += rating_pts
+            reasons.append(f"Program rating {rating:.1f}/5.0 (+{rating_pts:.1f})")
 
         return RankedProgram(
             handle=handle,
@@ -379,6 +405,7 @@ class ProgramDiscoveryRanker:
             open_scope=open_scope,
             state=state,
             rating=rating,
+            assets_loaded=assets_loaded,
             reasons=reasons,
             raw_attributes=attrs,
         )
@@ -391,7 +418,7 @@ class ProgramDiscoveryRanker:
 
 
 # ---------------------------------------------------------------------------
-# PHASE 4: COMPLETE GUIDELINE READER
+# PHASE 6: COMPLETE GUIDELINE READER
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -521,63 +548,21 @@ class PolicyParser:
 
 
 # ---------------------------------------------------------------------------
-# PHASE 5: BROWSER RESEARCH AGENT (SUPPLEMENTARY)
+# PHASE 7 & 8: PROGRAM AUTHORIZATION BRIEF CARD
 # ---------------------------------------------------------------------------
 
-class BrowserResearchAgent:
-    """Optional supplementary browser inspector for HackerOne policy and evidence.
-    
-    Security Invariants:
-    - Operates only under local researcher direction
-    - Never bypasses login gates, CAPTCHAs, or rate limits
-    - Read-only capture: saves screenshots, DOM text, and HAR logs to disk
-    """
+@dataclass
+class StructuredAssetEntry:
+    identifier: str
+    asset_type: str
+    eligible_for_bounty: bool
+    eligible_for_submission: bool
+    max_severity: str = "medium"
+    instruction: str = ""
 
-    def __init__(self, headless: bool = True):
-        self.headless = headless
+    def to_dict(self) -> dict:
+        return asdict(self)
 
-    def inspect_program_page(self, handle: str) -> dict[str, Any]:
-        """Inspect publicly available program page to extract missing guidelines."""
-        url = f"https://hackerone.com/{handle}"
-        result = {"url": url, "captured": False, "policy_text": "", "error": None}
-        try:
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=self.headless)
-                page = browser.new_page()
-                page.goto(url, timeout=20000)
-                # Expand policy elements if present
-                content = page.content()
-                # Clean text extraction
-                text = page.inner_text("body")
-                result["captured"] = True
-                result["policy_text"] = text[:15000]
-                browser.close()
-        except Exception as exc:
-            result["error"] = str(exc)
-            log.warning(f"Browser inspection unavailable for {handle}: {exc}")
-        return result
-
-    def capture_evidence_screenshot(self, target_url: str, output_path: Path) -> bool:
-        """Capture visual reproduction evidence for an authorized in-scope endpoint."""
-        try:
-            from playwright.sync_api import sync_playwright
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=self.headless)
-                page = browser.new_page()
-                page.goto(target_url, timeout=15000)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(output_path), full_page=False)
-                browser.close()
-            return True
-        except Exception as exc:
-            log.warning(f"Screenshot capture failed for {target_url}: {exc}")
-            return False
-
-
-# ---------------------------------------------------------------------------
-# PHASE 6: PROGRAM AUTHORIZATION BRIEF CARD
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ProgramAuthorizationBrief:
@@ -589,25 +574,28 @@ class ProgramAuthorizationBrief:
     retrieved_at: str
     in_scope_assets: list[str]
     out_of_scope_assets: list[str]
-    scope_exclusions: list[str]
-    testing_restrictions: list[str]
-    rate_limit: float
-    custom_headers: dict[str, str]
-    human_review_notes: list[str]
-    recommended_first_target: str
+    structured_asset_entries: list[dict[str, Any]] = field(default_factory=list)
+    scope_exclusions: list[str] = field(default_factory=list)
+    testing_restrictions: list[str] = field(default_factory=list)
+    rate_limit: float = 3.0
+    custom_headers: dict[str, str] = field(default_factory=dict)
+    human_review_notes: list[str] = field(default_factory=list)
+    recommended_first_target: str = ""
     approval_status: str = "PENDING_HUMAN_APPROVAL"  # PENDING_HUMAN_APPROVAL, APPROVED, REJECTED
     approved_by: str = ""
     approved_at: str = ""
 
     def render_markdown(self) -> str:
         bounty_str = "Yes (Paid Bounties)" if self.offers_bounties else "No (VDP / Points Only)"
-        in_assets_str = "\n".join(f"- `{a}`" for a in self.in_scope_assets[:25]) or "- _None specified_"
+        in_assets_str = "\n".join(f"- `{a}`" for a in self.in_scope_assets[:30]) or "- _No accessible structured scope assets returned by API_"
         out_assets_str = "\n".join(f"- `{a}`" for a in self.out_of_scope_assets[:15]) or "- _None specified_"
         excl_str = "\n".join(f"- {e}" for e in self.scope_exclusions[:10]) or "- _Standard H1 exclusions_"
         restr_str = "\n".join(f"- {r}" for r in self.testing_restrictions) or "- _Standard polite rate limits_"
         notes_str = "\n".join(f"- ⚠️ {n}" for n in self.human_review_notes) or "- None. Standard policy terms."
 
         headers_str = ", ".join(f"`{k}: {v}`" for k, v in self.custom_headers.items()) if self.custom_headers else "_None required_"
+
+        target_callout = f"🎯 **`{self.recommended_first_target}`**" if self.recommended_first_target else "⚠️ _No in-scope web asset identified for testing_"
 
         return f"""# PROGRAM AUTHORIZATION BRIEF: {self.handle.upper()}
 
@@ -637,12 +625,12 @@ class ProgramAuthorizationBrief:
 {notes_str}
 
 ### Proposed First Research Target
-🎯 **`{self.recommended_first_target or 'Select from in-scope assets'}`**
+{target_callout}
 
 ---
 > [!IMPORTANT]
 > **Operator Authorization Gate:** Target investigation cannot commence until this brief is signed off.
-> Run: `bb h1 approve --program {self.handle} --target "{self.recommended_first_target}"`
+> Run: `bb h1 approve --program {self.handle} --target "{self.recommended_first_target or '<target_url>'}"`
 """
 
 
@@ -653,18 +641,36 @@ class BriefGenerator:
     def generate_brief(prog: dict, policy: ProgramPolicyRecord,
                        scopes: list[dict], exclusions: list[dict]) -> ProgramAuthorizationBrief:
         attrs = prog.get("attributes") or {}
-        handle = attrs.get("handle") or prog.get("id") or "unknown"
+        handle = sanitize_handle(attrs.get("handle") or prog.get("id") or "unknown")
         name = attrs.get("name") or handle
         offers_bounties = bool(attrs.get("offers_bounties"))
 
         in_scope = []
         out_of_scope = []
+        structured_entries = []
+
         for s in scopes:
             s_attrs = s.get("attributes") or {}
-            identifier = s_attrs.get("asset_identifier")
+            identifier = (s_attrs.get("asset_identifier") or "").strip()
             if not identifier:
                 continue
-            if s_attrs.get("eligible_for_submission") is False:
+            asset_type = (s_attrs.get("asset_type") or "").upper()
+            eligible_bounty = bool(s_attrs.get("eligible_for_bounty", True))
+            eligible_sub = s_attrs.get("eligible_for_submission", True) is not False
+            max_sev = s_attrs.get("max_severity") or "medium"
+            instruction = s_attrs.get("instruction") or ""
+
+            entry = StructuredAssetEntry(
+                identifier=identifier,
+                asset_type=asset_type,
+                eligible_for_bounty=eligible_bounty,
+                eligible_for_submission=eligible_sub,
+                max_severity=max_sev,
+                instruction=instruction[:500],
+            )
+            structured_entries.append(entry.to_dict())
+
+            if not eligible_sub:
                 out_of_scope.append(identifier)
             else:
                 in_scope.append(identifier)
@@ -684,11 +690,17 @@ class BriefGenerator:
             if a.startswith("http://") or a.startswith("https://"):
                 first_target = a
                 break
-            if not a.startswith("*."):
+            if not a.startswith("*.") and ("." in a):
                 first_target = f"https://{a}"
                 break
         if not first_target and in_scope:
-            first_target = f"https://{in_scope[0].lstrip('*.')}"
+            candidate = in_scope[0]
+            if candidate.startswith("*."):
+                first_target = f"https://{candidate[2:]}"
+            elif "." in candidate:
+                first_target = f"https://{candidate}"
+            else:
+                first_target = candidate
 
         return ProgramAuthorizationBrief(
             handle=handle,
@@ -698,6 +710,7 @@ class BriefGenerator:
             retrieved_at=policy.retrieved_at,
             in_scope_assets=in_scope,
             out_of_scope_assets=out_of_scope,
+            structured_asset_entries=structured_entries,
             scope_exclusions=excl_list,
             testing_restrictions=restrictions,
             rate_limit=policy.rate_limit_rps,
@@ -728,7 +741,60 @@ class BriefGenerator:
 
 
 # ---------------------------------------------------------------------------
-# PHASE 8: HACKERONE REPORT PREPARATION
+# PHASE 9: BROWSER RESEARCH AGENT (SUPPLEMENTARY)
+# ---------------------------------------------------------------------------
+
+class BrowserResearchAgent:
+    """Optional supplementary browser inspector for HackerOne policy and evidence.
+    
+    Security Invariants:
+    - Operates only under local researcher direction
+    - Never bypasses login gates, CAPTCHAs, or rate limits
+    - Read-only capture: saves screenshots, DOM text, and HAR logs to disk
+    """
+
+    def __init__(self, headless: bool = True):
+        self.headless = headless
+
+    def inspect_program_page(self, handle: str) -> dict[str, Any]:
+        """Inspect publicly available program page to extract missing guidelines."""
+        safe_handle = sanitize_handle(handle)
+        url = f"https://hackerone.com/{safe_handle}"
+        result = {"url": url, "captured": False, "policy_text": "", "error": None}
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=self.headless)
+                page = browser.new_page()
+                page.goto(url, timeout=20000)
+                text = page.inner_text("body")
+                result["captured"] = True
+                result["policy_text"] = text[:15000]
+                browser.close()
+        except Exception as exc:
+            result["error"] = str(exc)
+            log.warning(f"Browser inspection unavailable for {safe_handle}: {exc}")
+        return result
+
+    def capture_evidence_screenshot(self, target_url: str, output_path: Path) -> bool:
+        """Capture visual reproduction evidence for an authorized in-scope endpoint."""
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=self.headless)
+                page = browser.new_page()
+                page.goto(target_url, timeout=15000)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(output_path), full_page=False)
+                browser.close()
+            return True
+        except Exception as exc:
+            log.warning(f"Screenshot capture failed for {target_url}: {exc}")
+            return False
+
+
+# ---------------------------------------------------------------------------
+# PHASE 10: HACKERONE REPORT PREPARATION
 # ---------------------------------------------------------------------------
 
 class HackerOneReportGenerator:

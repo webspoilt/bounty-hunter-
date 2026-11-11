@@ -21,6 +21,7 @@ from bb.h1 import (
     PolicyParser,
     ProgramDiscoveryRanker,
     ensure_h1_dirs,
+    sanitize_handle,
     submit_curl,
     submit_payload,
 )
@@ -775,6 +776,7 @@ def cmd_submit(args) -> int:
 
 def cmd_h1(args) -> int:
     """HackerOne acquisition, ranking, guideline reading, and report preparation."""
+    from dataclasses import asdict
     ensure_h1_dirs()
     action = args.action
 
@@ -801,7 +803,8 @@ def cmd_h1(args) -> int:
         return 0
 
     if action == "brief":
-        handle = args.program
+        raw_handle = args.program
+        handle = sanitize_handle(raw_handle)
         print(f"[*] Fetching complete guidelines and scope for '{handle}'...")
         try:
             client = H1Client()
@@ -839,7 +842,8 @@ def cmd_h1(args) -> int:
         return 0
 
     if action == "approve":
-        handle = args.program
+        raw_handle = args.program
+        handle = sanitize_handle(raw_handle)
         target = args.target
         from bb.h1 import H1_BRIEFS_DIR, H1_PROGRAMS_DIR
         brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
@@ -851,8 +855,13 @@ def cmd_h1(args) -> int:
         in_assets = data.get("in_scope_assets", [])
         
         # Verify proposed target against in-scope rules
-        client = H1Client()
-        scope = client.scope(handle)
+        try:
+            client = H1Client()
+            scope = client.scope(handle)
+        except Exception as exc:
+            print(f"[!] Could not verify program scope for '{handle}': {exc}")
+            return 1
+
         if target:
             if not scope.is_in_scope(target):
                 print(f"[!] PROPOSED TARGET REJECTED: '{target}' is NOT in-scope according to program policy rules.")
@@ -889,7 +898,8 @@ def cmd_h1(args) -> int:
         if not finding:
             raise SystemExit(f"no finding matching {args.finding!r}")
 
-        handle = args.program or finding.meta.get("program") or "target_program"
+        raw_handle = args.program or finding.meta.get("program") or "target_program"
+        handle = sanitize_handle(raw_handle)
         from bb.h1 import H1_BRIEFS_DIR, H1_REPORTS_DIR, ProgramAuthorizationBrief
         brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
         if brief_file.exists():
@@ -906,8 +916,9 @@ def cmd_h1(args) -> int:
             )
 
         draft = HackerOneReportGenerator.prepare_draft(finding, brief)
-        out_json = H1_REPORTS_DIR / f"h1_report_{finding.id[:8]}.json"
-        out_md = H1_REPORTS_DIR / f"h1_report_{finding.id[:8]}.md"
+        safe_id = sanitize_handle(finding.id[:12])
+        out_json = H1_REPORTS_DIR / f"h1_report_{safe_id}.json"
+        out_md = H1_REPORTS_DIR / f"h1_report_{safe_id}.md"
         out_json.write_text(json.dumps(draft, indent=2), encoding="utf-8")
         out_md.write_text(draft["vulnerability_information"], encoding="utf-8")
 

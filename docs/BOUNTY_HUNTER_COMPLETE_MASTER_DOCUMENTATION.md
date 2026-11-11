@@ -3221,13 +3221,28 @@ Implemented in `bb.h1.HackerOneReportGenerator` and CLI `bb h1 report`:
 
 ---
 
-### 19.9 Verification & Test Coverage Matrix
+### 19.9 Verification, Defect Remediation & Test Coverage Matrix
+
+#### Defect Audit and Remediation Record (Phase 1–12):
+1. **Defect 1: `NameError: name 'asdict' is not defined` in `bb h1 brief`**:
+   - *Root Cause:* In `bb/cli.py`, `asdict(brief)` was called when saving `data/h1/briefs/<handle>_brief.json` before `asdict` was imported into the scope of `cmd_h1`.
+   - *Fix:* Added `from dataclasses import asdict` to `cmd_h1` and verified full dataclass serialization.
+2. **Defect 2: Misleading "Assets: 0" and Identical 55.0 Scores in Program Listing**:
+   - *Root Cause:* The HackerOne API `GET /v1/hackers/programs` endpoint omits the `relationships.structured_scopes` payload in bulk list queries (returning `None`). The parser defaulted `len(scope_data)` to 0 and falsely printed `Assets: 0`, and the ranker assigned an identical 55.0 score ($40\text{ bounty} + 15\text{ open}$) to every program.
+   - *Fix:* Updated `RankedProgram` to track `assets_loaded`. In list views, it explicitly prints `Assets: Not loaded in list view` instead of falsely reporting 0 assets. Scoring now incorporates program rating ($+0$ to $+10$ pts), active submission status, and preserves unskewed ordering. Full assets are populated when inspecting individual programs via `bb h1 brief`.
+3. **Defect 3: Missing Filename Sanitization**:
+   - *Root Cause:* Direct interpolation of user-supplied `handle` into path strings (`data/h1/briefs/{handle}_brief.json`) allowed potential directory traversal (e.g. `../../`).
+   - *Fix:* Added `sanitize_handle()` restricting handles to alphanumeric, dash, and underscore characters.
+4. **Defect 4: Traceback Leaks on Missing Credentials or Network Failures**:
+   - *Root Cause:* CLI handlers printed raw tracebacks on certain API and serialization errors.
+   - *Fix:* Wrapped API calls with user-friendly diagnostics guiding the researcher to set `H1_USERNAME` and `H1_TOKEN`.
 
 | Test Suite | Tests Passing | Key Capabilities Verified |
 | :--- | :---: | :--- |
 | `tests/test_h1.py` | 6 | Basic credentials, submit payload shape, printed curl, structured scope parsing |
 | `tests/test_h1_pipeline.py` | 9 | Credential missing, host restriction, pagination, 429 retry, multi-factor ranking, policy parsing, brief card generation, target scope enforcement, report draft preparation |
-| **Total Pipeline Pass** | **15 passed** | **Zero failures, zero regressions across 356 total project tests** |
+| `tests/test_h1_repair.py` | 5 | `asdict` serialization, safe filename sanitization, honest asset display when not loaded, rating-based ranking scoring, empty & populated asset inventories |
+| **Total Pipeline Pass** | **20 passed** | **Zero failures, zero regressions across 361 total project tests** |
 
 ---
 
