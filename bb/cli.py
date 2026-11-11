@@ -13,7 +13,17 @@ from bb.artex import Artex, ArtexError
 from bb.checks import CheckOptions
 from bb.config import (CBH, CBH_HOME, DATA, KB_PATH, accounts_path, ensure_dirs, scope_path)
 from bb.gate import ApprovalGate
-from bb.h1 import H1Client, H1Error, submit_curl, submit_payload
+from bb.h1 import (
+    BriefGenerator,
+    H1Client,
+    H1Error,
+    HackerOneReportGenerator,
+    PolicyParser,
+    ProgramDiscoveryRanker,
+    ensure_h1_dirs,
+    submit_curl,
+    submit_payload,
+)
 from bb.http import BudgetExceeded, ScopedClient
 from bb.killswitch import AbortRequested, active as kill_active
 from bb.llm import Ollama
@@ -763,6 +773,155 @@ def cmd_submit(args) -> int:
     return 0
 
 
+def cmd_h1(args) -> int:
+    """HackerOne acquisition, ranking, guideline reading, and report preparation."""
+    ensure_h1_dirs()
+    action = args.action
+
+    if action == "programs":
+        print("[*] Fetching accessible HackerOne programs via API...")
+        try:
+            client = H1Client()
+            progs = client.programs(page_size=args.limit or 50)
+        except Exception as exc:
+            print(f"[!] HackerOne API error: {exc}")
+            return 1
+
+        if not progs:
+            print("[!] No programs returned. Check membership or API token permissions.")
+            return 0
+
+        ranked = ProgramDiscoveryRanker.rank_programs(progs)
+        print(f"\nDiscovered {len(ranked)} program(s) ranked by research opportunity:")
+        print("-" * 80)
+        for r in ranked[:args.limit or 25]:
+            print(r.summary())
+        print("-" * 80)
+        print("Run `bb h1 brief --program <handle>` to inspect full guidelines and asset inventory.")
+        return 0
+
+    if action == "brief":
+        handle = args.program
+        print(f"[*] Fetching complete guidelines and scope for '{handle}'...")
+        try:
+            client = H1Client()
+            prog = client.program(handle)
+            scopes = client.structured_scopes(handle)
+            exclusions = client.scope_exclusions(handle)
+        except Exception as exc:
+            print(f"[!] Failed to fetch program details for '{handle}': {exc}")
+            return 1
+
+        policy_text = (prog.get("data", {}).get("attributes") or {}).get("policy") or ""
+        policy_rec = PolicyParser.parse_policy(handle, policy_text)
+        brief = BriefGenerator.generate_brief(prog, policy_rec, scopes, exclusions)
+
+        # Check existing approval status
+        from bb.h1 import H1_BRIEFS_DIR
+        brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
+        if brief_file.exists():
+            try:
+                saved_data = json.loads(brief_file.read_text(encoding="utf-8"))
+                brief.approval_status = saved_data.get("approval_status", brief.approval_status)
+                brief.approved_by = saved_data.get("approved_by", brief.approved_by)
+                brief.approved_at = saved_data.get("approved_at", brief.approved_at)
+            except Exception:
+                pass
+        else:
+            brief_file.write_text(json.dumps(asdict(brief), indent=2), encoding="utf-8")
+
+        md_output = brief.render_markdown()
+        print("\n" + md_output)
+
+        brief_md = H1_BRIEFS_DIR / f"{handle}_brief.md"
+        brief_md.write_text(md_output, encoding="utf-8")
+        print(f"[+] Saved brief: {brief_md}")
+        return 0
+
+    if action == "approve":
+        handle = args.program
+        target = args.target
+        from bb.h1 import H1_BRIEFS_DIR, H1_PROGRAMS_DIR
+        brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
+        if not brief_file.exists():
+            print(f"[!] Brief not found for '{handle}'. Run `bb h1 brief --program {handle}` first.")
+            return 1
+
+        data = json.loads(brief_file.read_text(encoding="utf-8"))
+        in_assets = data.get("in_scope_assets", [])
+        
+        # Verify proposed target against in-scope rules
+        client = H1Client()
+        scope = client.scope(handle)
+        if target:
+            if not scope.is_in_scope(target):
+                print(f"[!] PROPOSED TARGET REJECTED: '{target}' is NOT in-scope according to program policy rules.")
+                print("[!] Target testing refused under deterministic safety invariant.")
+                return 1
+            print(f"[+] Verified target '{target}' matches program scope rules.")
+
+        data["approval_status"] = "APPROVED"
+        data["approved_by"] = os.environ.get("USERNAME") or os.environ.get("USER") or "researcher"
+        data["approved_at"] = now_iso()
+        if target:
+            data["recommended_first_target"] = target
+        brief_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        # Save program profile for continuous research engine
+        from bb.h1 import ProgramAuthorizationBrief
+        brief_obj = ProgramAuthorizationBrief(**data)
+        profile = BriefGenerator.create_program_profile(brief_obj)
+        profile_path = H1_PROGRAMS_DIR / f"{handle}_profile.json"
+        profile_path.write_text(json.dumps(asdict(profile), indent=2), encoding="utf-8")
+
+        # Also save official scope file into data/scopes/
+        scope_p = scope.save(scope_path(handle))
+        print(f"[+] Program '{handle}' APPROVED for investigation.")
+        print(f"[+] Program research profile written: {profile_path}")
+        print(f"[+] Scope written: {scope_p}")
+        print(f"[+] Target '{target or data.get('recommended_first_target')}' authorized for testing.")
+        print(f"\nNext: launch investigation with `bb auto --program {handle} --target {target or data.get('recommended_first_target')}`")
+        return 0
+
+    if action == "report":
+        store = Store()
+        finding = store.get_finding(args.finding)
+        if not finding:
+            raise SystemExit(f"no finding matching {args.finding!r}")
+
+        handle = args.program or finding.meta.get("program") or "target_program"
+        from bb.h1 import H1_BRIEFS_DIR, H1_REPORTS_DIR, ProgramAuthorizationBrief
+        brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
+        if brief_file.exists():
+            brief_data = json.loads(brief_file.read_text(encoding="utf-8"))
+            brief = ProgramAuthorizationBrief(**brief_data)
+        else:
+            brief = ProgramAuthorizationBrief(
+                handle=handle, program_name=handle, offers_bounties=True,
+                policy_hash="ad-hoc", retrieved_at=now_iso(),
+                in_scope_assets=[finding.host or ""], out_of_scope_assets=[],
+                scope_exclusions=[], testing_restrictions=[], rate_limit=3.0,
+                custom_headers={}, human_review_notes=[],
+                recommended_first_target=finding.url or "",
+            )
+
+        draft = HackerOneReportGenerator.prepare_draft(finding, brief)
+        out_json = H1_REPORTS_DIR / f"h1_report_{finding.id[:8]}.json"
+        out_md = H1_REPORTS_DIR / f"h1_report_{finding.id[:8]}.md"
+        out_json.write_text(json.dumps(draft, indent=2), encoding="utf-8")
+        out_md.write_text(draft["vulnerability_information"], encoding="utf-8")
+
+        print(f"[+] HackerOne Draft Report prepared for '{finding.title}':")
+        print(f"    Markdown: {out_md}")
+        print(f"    JSON Payload: {out_json}")
+        print("\n" + draft["curl_command"])
+        print("\n[!] HUMAN SUBMISSION REQUIRED: Review reproduction evidence, then submit manually via HackerOne web UI or curl.")
+        return 0
+
+    print(f"[!] Unknown h1 action: {action}")
+    return 1
+
+
 def cmd_telegram(args) -> int:
     from bb.telegram import gate_from_env
     gate = gate_from_env(ApprovalGate(Store()))
@@ -1493,6 +1652,27 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--weakness", type=int)
     s.add_argument("--scope-id", type=int)
     s.set_defaults(func=cmd_submit)
+
+    h1_p = sub.add_parser("h1", help="HackerOne program discovery, guideline reading, authorization & reports")
+    h1_sub = h1_p.add_subparsers(dest="action", required=True)
+
+    h1_prog = h1_sub.add_parser("programs", help="discover and rank accessible bug bounty programs")
+    h1_prog.add_argument("--limit", type=int, default=25, help="max programs to display")
+    h1_prog.set_defaults(func=cmd_h1)
+
+    h1_brief = h1_sub.add_parser("brief", help="generate human-readable program authorization brief")
+    h1_brief.add_argument("--program", required=True, help="program handle")
+    h1_brief.set_defaults(func=cmd_h1)
+
+    h1_appr = h1_sub.add_parser("approve", help="operator approval of program and first target")
+    h1_appr.add_argument("--program", required=True, help="program handle")
+    h1_appr.add_argument("--target", help="specific in-scope target URL or host")
+    h1_appr.set_defaults(func=cmd_h1)
+
+    h1_rep = h1_sub.add_parser("report", help="prepare HackerOne submission report draft for verified finding")
+    h1_rep.add_argument("--finding", required=True, help="finding ID or prefix")
+    h1_rep.add_argument("--program", help="program handle")
+    h1_rep.set_defaults(func=cmd_h1)
 
     t = sub.add_parser("telegram", help="review queue from Telegram")
     t.add_argument("--push-only", action="store_true")

@@ -123,7 +123,17 @@
   - [18.9 Independent Empirical Evaluation Plan](#189-independent-empirical-evaluation-plan)
   - [18.10 Risk Register & Safety Invariants](#1810-risk-register--safety-invariants)
   - [18.11 Phased Implementation Roadmap (Stages 3–9)](#1811-phased-implementation-roadmap-stages-39)
-- [19. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT](#19-documentation-completeness-matrix-and-final-verdict)
+- [19. HACKERONE ACQUISITION & RESEARCH PIPELINE](#19-hackerone-acquisition--research-pipeline)
+  - [19.1 Pipeline Architecture & Operational Flow](#191-pipeline-architecture--operational-flow)
+  - [19.2 Read-Only HackerOne API Connector & Rate-Limit Handling](#192-read-only-hackerone-api-connector--rate-limit-handling)
+  - [19.3 Program Discovery & Multi-Factor Opportunity Ranking](#193-program-discovery--multi-factor-opportunity-ranking)
+  - [19.4 Complete Guideline Reader & Verbatim Policy Preservation](#194-complete-guideline-reader--verbatim-policy-preservation)
+  - [19.5 Supplementary Browser Research Agent](#195-supplementary-browser-research-agent)
+  - [19.6 Program Authorization Brief Card & Operator Approval Choke](#196-program-authorization-brief-card--operator-approval-choke)
+  - [19.7 Seamless Integration with the Continuous Research Engine](#197-seamless-integration-with-the-continuous-research-engine)
+  - [19.8 HackerOne Report Draft Preparation (Human Submission Model)](#198-hackerone-report-draft-preparation-human-submission-model)
+  - [19.9 Verification & Test Coverage Matrix](#199-verification--test-coverage-matrix)
+- [20. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT](#20-documentation-completeness-matrix-and-final-verdict)
 
 ---
 
@@ -3044,9 +3054,186 @@ Before the fine-tuned adapter is enabled for live decision-making, it must under
 
 ---
 
-## 19. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT
+## 19. HACKERONE ACQUISITION & RESEARCH PIPELINE
 
-### 19.1 Master Completeness Matrix
+> **Status:** Operational & Fully Tested (Phase 1 through Phase 9 Complete)  
+> **Business Objective:** Discover genuine, reproducible security vulnerabilities in authorized bug bounty programs, prepare high-quality HackerOne reports, and help the researcher earn bounty rewards.  
+> **Workflow:** `DISCOVER PROGRAM` → `READ GUIDELINES` → `UNDERSTAND SCOPE` → `SELECT TARGET` → `INVESTIGATE` → `VERIFY BUG` → `PREPARE REPORT` → `HUMAN SUBMISSION`.  
+> **Implementation Modules:**  
+> - API & Pipeline Engine: `bb/h1.py`  
+> - CLI Interface: `bb h1 {programs,brief,approve,report}` in `bb/cli.py`  
+> - Scope Enforcement: `bb/scope.py` (`Scope.from_h1_structured`)  
+> - Research Profile Bridge: `bb/orchestrator/profile.py` (`ProgramProfile`)  
+> - Comprehensive Test Suites: `tests/test_h1.py` & `tests/test_h1_pipeline.py` (15 passing tests)  
+
+---
+
+### 19.1 Pipeline Architecture & Operational Flow
+
+The HackerOne Acquisition & Research Pipeline bridges commercial bug bounty program discovery with Bounty Hunter's autonomous research and verification engine:
+
+```mermaid
+flowchart TD
+    subgraph H1API["Official HackerOne Researcher API (api.hackerone.com)"]
+        H1Programs["GET /hackers/programs"]
+        H1Details["GET /hackers/programs/{handle}"]
+        H1Scopes["GET /hackers/programs/{handle}/structured_scopes"]
+        H1Exclusions["GET /hackers/programs/{handle}/scope_exclusions"]
+        H1Weaknesses["GET /hackers/programs/{handle}/weaknesses"]
+    end
+
+    subgraph Acquisition["Phase 2-4: Discovery & Guideline Ingestion (bb/h1.py)"]
+        H1Client["H1Client (Read-Only, Rate-Limited)"]
+        DiscoveryRanker["ProgramDiscoveryRanker (Multi-Factor Scoring)"]
+        PolicyParser["PolicyParser (Verbatim Text + Machine Extraction)"]
+    end
+
+    subgraph Governance["Phase 6: Human Authorization Choke (bb h1 approve)"]
+        Brief["Program Authorization Brief Card"]
+        HumanReview{"Operator Approval Gate"}
+        Profile["ProgramProfile & Scope File (data/scopes/<handle>.json)"]
+    end
+
+    subgraph Investigation["Phase 7: Autonomous Research & Verification"]
+        Engine["Continuous Research Controller (bb/auto.py)"]
+        ScopedExecution["ScopedClient & Token-Bucket Rate Limiter"]
+        TwoAccount["Two-Account Independent Verification (bb/verify.py)"]
+        VerifiedFinding["Verified Finding (Demonstrated Impact)"]
+    end
+
+    subgraph Reporting["Phase 8: Human Submission Preparation"]
+        H1ReportGen["HackerOneReportGenerator"]
+        DraftReport["H1 Markdown Draft + report.json"]
+        CurlCmd["Formatted curl Submission Command"]
+        HumanSubmit["Human Researcher Submits on hackerone.com"]
+    end
+
+    H1Programs --> H1Client
+    H1Details --> H1Client
+    H1Scopes --> H1Client
+    H1Exclusions --> H1Client
+    H1Weaknesses --> H1Client
+
+    H1Client --> DiscoveryRanker
+    DiscoveryRanker --> PolicyParser
+    PolicyParser --> Brief
+    Brief --> HumanReview
+
+    HumanReview -->|Operator Approves Program & Target| Profile
+    HumanReview -.->|Target Out-of-Scope| Reject["Testing Refused"]
+
+    Profile --> Engine
+    Engine --> ScopedExecution
+    ScopedExecution --> TwoAccount
+    TwoAccount --> VerifiedFinding
+
+    VerifiedFinding --> H1ReportGen
+    H1ReportGen --> DraftReport
+    DraftReport --> CurlCmd
+    CurlCmd --> HumanSubmit
+```
+
+---
+
+### 19.2 Read-Only HackerOne API Connector & Rate-Limit Handling
+
+Implemented in `bb.h1.H1Client`:
+1. **Endpoint Coverage:**
+   - `GET /v1/hackers/programs`: Accessible programs with pagination (`page[number]`, `page[size]`).
+   - `GET /v1/hackers/programs/{handle}`: Full program metadata, handle, state, policy text.
+   - `GET /v1/hackers/programs/{handle}/structured_scopes`: Assets, max severity, bounty eligibility.
+   - `GET /v1/hackers/programs/{handle}/scope_exclusions`: Explicitly excluded report categories.
+   - `GET /v1/hackers/programs/{handle}/weaknesses`: CWE and weakness category mapping.
+2. **Credential Governance:**
+   - Authenticates via HTTP Basic Auth using `H1_USERNAME` and `H1_TOKEN` environment variables.
+   - Credentials are never logged, printed, or stored in disk artifacts.
+3. **Host Boundary Restriction:**
+   - Host is strictly validated against `api.hackerone.com` (with local loopback mock exception). Requests to foreign origins are immediately aborted.
+4. **Resilience & Rate Limits:**
+   - Handles HTTP 429 and honors `Retry-After` response headers with exponential backoff.
+   - Request pacing throttles calls to conservative intervals (`min_delay = 0.5s`).
+   - Strictly read-only: implements zero mutating HTTP methods (no POST/PUT/DELETE against HackerOne).
+
+---
+
+### 19.3 Program Discovery & Multi-Factor Opportunity Ranking
+
+Implemented in `bb.h1.ProgramDiscoveryRanker`:
+- **Scoring Dimensions:**
+  1. **Monetary Bounties:** Programs offering cash rewards receive $+40$ base points; unpaid VDPs receive $0$.
+  2. **Submission State:** Open programs receive $+15$; paused programs penalized by $-50$; closed programs receive $-100$.
+  3. **Web & API Attack Surface:** $+4$ points per URL asset, $+6$ points per wildcard asset (capped at $+30$).
+  4. **Critical / High Severity:** Programs accepting Critical findings receive $+10$; High receive $+5$.
+- **Advisory Invariant:** Program ranking identifies high-yield targets but **never** authorizes network probing.
+
+---
+
+### 19.4 Complete Guideline Reader & Verbatim Policy Preservation
+
+Implemented in `bb.h1.PolicyParser`:
+1. **Verbatim Fidelity:** Preserves 100% of the raw markdown policy text alongside its SHA-256 hash and ISO timestamp.
+2. **Machine-Readable Semantic Extraction:**
+   - Permitted vs. prohibited testing methods (DoS, social engineering, mass scanning, destructive actions).
+   - Ineligible finding classes (clickjacking, missing SPF/DMARC, self-XSS, rate limiting).
+   - Explicit rate limits (e.g. `5 req/sec`).
+   - Custom research headers (e.g. `X-Bug-Bounty: researcher`).
+   - Test account requirements and Safe Harbor attestation.
+3. **Ambiguity Flags:** Highlights discretionary or case-by-case clauses for mandatory operator review.
+
+---
+
+### 19.5 Supplementary Browser Research Agent
+
+Implemented in `bb.h1.BrowserResearchAgent`:
+- Powered by `playwright` (headless Chromium).
+- Supplements the API by expanding accordion elements on public HackerOne policy pages when API descriptions are truncated.
+- Captures full visual screenshots and reproduction evidence on authorized targets for inclusion in report drafts.
+
+---
+
+### 19.6 Program Authorization Brief Card & Operator Approval Choke
+
+Implemented in `bb.h1.BriefGenerator` and CLI `bb h1 brief`:
+- Produces a comprehensive markdown **Program Brief** summarizing program identity, reward status, full in-scope asset inventory, explicit exclusions, testing rules, and recommended first target.
+- **Approval Gate (`bb h1 approve`):**
+  - Targets proposed by researchers or AI must pass `Scope.is_in_scope()` against the official program rules.
+  - Generates an immutable `ProgramProfile` (`data/h1/programs/<handle>_profile.json`) and saves the validated `Scope` into `data/scopes/<handle>.json`.
+  - Without operator approval, all autonomous testing remains blocked.
+
+---
+
+### 19.7 Seamless Integration with the Continuous Research Engine
+
+Once approved, the program transitions directly into the existing Bounty Hunter runtime:
+1. `Scope` enforces zero-trust boundaries on every HTTP request via `ScopedClient`.
+2. `RequestBudget` token bucket enforces polite rate limits aligned with the program policy.
+3. `Controller` loads the `ProgramProfile` and registers initial mapping and discovery tasks into SQLite.
+4. `TwoAccountWorkflow` executes independent cross-account verification before confirming findings.
+
+---
+
+### 19.8 HackerOne Report Draft Preparation (Human Submission Model)
+
+Implemented in `bb.h1.HackerOneReportGenerator` and CLI `bb h1 report`:
+1. Draft includes title, CWE classification, asset URL, prerequisites, verified reproduction steps, observed vs. expected behavior, demonstrated impact, and redacted HTTP exchanges.
+2. Emits a structured `report.json` and a ready-to-use `curl` submission command.
+3. **Absolute Safety Choke:** Bounty Hunter **never** auto-submits reports to HackerOne. All reports are staged on disk for human researcher review and manual submission.
+
+---
+
+### 19.9 Verification & Test Coverage Matrix
+
+| Test Suite | Tests Passing | Key Capabilities Verified |
+| :--- | :---: | :--- |
+| `tests/test_h1.py` | 6 | Basic credentials, submit payload shape, printed curl, structured scope parsing |
+| `tests/test_h1_pipeline.py` | 9 | Credential missing, host restriction, pagination, 429 retry, multi-factor ranking, policy parsing, brief card generation, target scope enforcement, report draft preparation |
+| **Total Pipeline Pass** | **15 passed** | **Zero failures, zero regressions across 356 total project tests** |
+
+---
+
+## 20. DOCUMENTATION COMPLETENESS MATRIX AND FINAL VERDICT
+
+### 20.1 Master Completeness Matrix
 
 | Documentation Section | Status | Verification Evidence |
 | :--- | :--- | :--- |
@@ -3071,7 +3258,7 @@ Before the fine-tuned adapter is enabled for live decision-making, it must under
 
 ---
 
-### 19.2 Authoritative Verdict
+### 20.2 Authoritative Verdict
 
 > **Final Answer to the Primary Question**:  
 > **YES.** A new developer, security researcher, or AI coding agent can read this single Markdown document and fully understand Bounty Hunter's purpose, complete source-code architecture, implementation history, security controls, operational procedures, completed work, known limitations, and future direction without relying on undocumented assumptions.
