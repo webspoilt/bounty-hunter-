@@ -306,7 +306,11 @@ class H1Client:
         last_exc = None
         for path in (f"/hackers/programs/{safe_handle}", f"/programs/{safe_handle}"):
             try:
-                return self._get(path)
+                res = self._get(path)
+                # Normalize top-level vs nested JSON:API data formats
+                if isinstance(res, dict) and "data" in res and isinstance(res["data"], dict) and "attributes" in res["data"]:
+                    return res["data"]
+                return res
             except H1Error as exc:
                 last_exc = exc
         raise H1Error(f"Could not load program {handle!r}: {last_exc}")
@@ -691,11 +695,21 @@ class PolicyParser:
             h_name = h_match.group(1)
             h_val = h_match.group(2)
 
-        # Account requirement
+        # Account requirement & consent provisions
         requires_account = bool(re.search(r"\b(test\s+account|create\s+an?\s+account|use\s+your\s+@wearehackerone)\b", policy_text, re.I))
+        company_account_restriction = bool(
+            re.search(r"company('s)?\s+greenhouse\s+account.*?prior\s+written\s+authorization", policy_text, re.I)
+            or re.search(r"prior\s+written\s+(authorization|consent)\s+(from|by)\s+greenhouse", policy_text, re.I)
+        )
 
-        # Check for ambiguity
+        # Check for ambiguity & special authorization prerequisites
         ambiguous = []
+        if company_account_restriction:
+            ambiguous.append(
+                "CRITICAL PREREQUISITE: Testing using a company's Greenhouse account is strictly PROHIBITED without prior written authorization from Greenhouse."
+            )
+        if re.search(r"\b(we\s+do\s+not\s+provide\s+test\s+accounts)\b", policy_text, re.I):
+            ambiguous.append("Program does not provide test accounts; researcher must supply their own authorized account")
         if re.search(r"\b(at\s+our\s+discretion|case[- ]by[- ]case|contact\s+support\s+before\s+testing)\b", policy_text, re.I):
             ambiguous.append("Policy specifies discretionary or case-by-case rules")
         if "automated_scanners_prohibited" in prohibited:
