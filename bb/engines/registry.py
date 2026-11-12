@@ -16,6 +16,7 @@ from bb.engines.nuclei import NucleiEngine
 from bb.engines.semgrep import SemgrepEngine
 from bb.engines.shannon import ShannonEngine
 from bb.engines.sqlmap import SQLmapEngine
+from bb.engines.zap import ZAPEngine
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class EngineRegistry:
             SemgrepEngine(),
             BountybotAuthzEngine(),
             BurpSuiteEngine(),
+            ZAPEngine(),
         ]
         for engine in defaults:
             self.register(engine)

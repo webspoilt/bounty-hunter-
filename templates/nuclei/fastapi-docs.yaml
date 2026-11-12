@@ -1,0 +1,23 @@
+id: fastapi-docs-exposure
+info:
+  name: FastAPI OpenAPI Documentation Exposed
+  author: bountybot
+  severity: low
+  description: Publicly accessible Swagger UI / OpenAPI specification exposing internal API schemas and endpoints.
+  tags: exposure,api,fastapi,swagger
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/docs"
+      - "{{BaseURL}}/openapi.json"
+    stop-at-first-match: true
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        words:
+          - "Swagger UI"
+          - "openapi"
+        condition: or

@@ -126,14 +126,33 @@ class NucleiEngine(BaseEngine):
         start_time = time.time()
         output_file = self._work_dir / f"nuclei_{int(start_time)}.jsonl"
 
+        # Determine templates path: explicit flags > bundled safe templates > tags
+        custom_t = None
+        for flag in context.extra_flags:
+            if flag.startswith("-t=") or flag.startswith("--template="):
+                custom_t = flag.split("=", 1)[1]
+                break
+
+        template_arg: list[str] = []
+        if custom_t and Path(custom_t).exists():
+            template_arg = ["-t", custom_t]
+        else:
+            bundled_templates = Path(__file__).resolve().parent.parent.parent / "templates" / "nuclei"
+            if bundled_templates.exists():
+                template_arg = ["-t", str(bundled_templates)]
+            elif self._tags:
+                template_arg = ["-tags", self._tags]
+
         cmd = [
             avail.binary_path,
             "-u", context.target,
             "-rate-limit", str(int(context.rate_limit or self._rate_limit)),
-            "-tags", self._tags,
+            *template_arg,
             "-jsonl",
             "-output", str(output_file),
             "-silent",
+            "-duc",
+            "-no-stdin",
         ]
 
         if context.dry_run:
@@ -181,6 +200,7 @@ class NucleiEngine(BaseEngine):
 
     def collect_findings(self, raw_data: Any, context: ExecutionContext) -> list[Finding]:
         findings: list[Finding] = []
+        seen_keys: set[str] = set()
         path = Path(raw_data) if isinstance(raw_data, (str, Path)) else None
         if not path or not path.exists():
             return findings
@@ -197,6 +217,11 @@ class NucleiEngine(BaseEngine):
                     name = info.get("name", template_id)
                     severity = info.get("severity", "medium").lower()
                     matched = item.get("matched-at", context.target)
+                    dedupe_key = f"{template_id}:{matched}"
+                    if dedupe_key in seen_keys:
+                        continue
+                    seen_keys.add(dedupe_key)
+
                     parsed = urlparse(matched)
 
                     req = item.get("request", "")
@@ -236,6 +261,8 @@ class NucleiEngine(BaseEngine):
                             "template_id": template_id,
                             "cve_id": info.get("classification", {}).get("cve-id", []),
                             "upstream_status": f"nuclei_{severity}",
+                            "active_discovery": True,
+                            "imported_finding": False,
                             "verified_by": None,
                             "reproduced_by": None,
                         },

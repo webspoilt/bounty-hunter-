@@ -1,0 +1,22 @@
+id: sqlite-error-disclosure
+info:
+  name: SQLite Syntax Error Disclosure
+  author: bountybot
+  severity: low
+  description: Unhandled SQLite error messages leaked in application HTTP responses when special characters are supplied.
+  tags: sqli,error,exposure
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/api/vulnerable/products/search?q=%27"
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 500
+      - type: word
+        words:
+          - "unrecognized token"
+          - "syntax error"
+          - "sqlite"
+        condition: or

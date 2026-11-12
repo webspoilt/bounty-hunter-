@@ -121,14 +121,18 @@ class DalfoxEngine(BaseEngine):
             )
 
         start_time = time.time()
+        is_loopback = "127.0.0.1" in context.target or "localhost" in context.target
         cmd = [
             avail.binary_path,
             "url", context.target,
             "--format", "json",
-            "--delay", str(int(1000 / self._rate_limit)),
-            "--waf-evasion",
             "--silence",
+            "--only-poc", "v,r",
+            "--mining-dict=false",
+            "--mining-dom=false",
         ]
+        if not is_loopback:
+            cmd.extend(["--delay", str(int(1000 / self._rate_limit))])
 
         if context.dry_run:
             return EngineExecutionResult(
@@ -176,51 +180,62 @@ class DalfoxEngine(BaseEngine):
         if not raw_output:
             return findings
 
-        # Parse line-delimited JSON
-        lines = str(raw_output).splitlines()
-        for line in lines:
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                item = json.loads(line)
-                param = item.get("param", "unknown")
-                poc = item.get("data", "")
-                severity = item.get("severity", "medium").lower()
-                parsed = urlparse(context.target)
+        items: list[dict] = []
+        text = str(raw_output).strip()
+        try:
+            parsed_json = json.loads(text)
+            if isinstance(parsed_json, list):
+                items.extend([x for x in parsed_json if isinstance(x, dict)])
+            elif isinstance(parsed_json, dict):
+                items.append(parsed_json)
+        except Exception:
+            for line in text.splitlines():
+                line = line.strip().rstrip(",")
+                if line.startswith("{") and line.endswith("}"):
+                    try:
+                        items.append(json.loads(line))
+                    except Exception:
+                        pass
 
-                f = Finding(
-                    title=f"[Dalfox] Potential XSS on parameter '{param}'",
-                    bug_class="xss",
-                    severity="high" if severity in ("high", "critical") else "medium",
-                    confidence="medium",  # Candidate finding until independently verified
-                    host=parsed.netloc,
-                    url=context.target,
-                    status=FindingLifecycle.DISCOVERED.value,  # Starts as DISCOVERED
-                    summary=f"Dalfox flagged Cross-Site Scripting on parameter '{param}' at {context.target}.",
-                    impact="An attacker can execute arbitrary JavaScript in the victim's browser context, steal session cookies, or initiate unauthorized state-changing actions.",
-                    remediation="Apply context-aware HTML entity encoding or Content-Security-Policy (CSP) headers.",
-                    steps=[
-                        f"1. Target endpoint: {context.target}",
-                        f"2. Payload injected into parameter '{param}': {poc}",
-                        "3. Verify script execution or unescaped reflection.",
-                    ],
-                    evidence=[Evidence(summary=f"XSS PoC on {param}", extra={"poc": poc, "param": param})],
-                    meta={
-                        "discovery_engine": self.name,
-                        "engine_version": self.version,
-                        "program": context.program,
-                        "param": param,
-                        "cwe": "CWE-79",
-                        "upstream_status": "dalfox_poc_candidate",
-                        "verified_by": None,
-                        "reproduced_by": None,
-                    },
-                )
-
-                findings.append(f)
-            except Exception:
+        for item in items:
+            param = item.get("param", "")
+            if not param:
                 continue
+            poc = item.get("data", "") or item.get("payload", "")
+            severity = item.get("severity", "medium").lower()
+            parsed = urlparse(context.target)
+
+            f = Finding(
+                title=f"[Dalfox] Identified Reflected XSS on parameter '{param}'",
+                bug_class="xss",
+                severity="high" if severity in ("high", "critical") else "medium",
+                confidence="high" if item.get("type") == "V" else "medium",
+                host=parsed.netloc,
+                url=item.get("data") or context.target,
+                status=FindingLifecycle.DISCOVERED.value,
+                summary=f"Dalfox identified Cross-Site Scripting on parameter '{param}' at {context.target}.",
+                impact="An attacker can execute arbitrary JavaScript in the victim's browser context, steal session cookies, or initiate unauthorized state-changing actions.",
+                remediation="Apply context-aware HTML entity encoding or Content-Security-Policy (CSP) headers.",
+                steps=[
+                    f"1. Target endpoint: {context.target}",
+                    f"2. Payload injected into parameter '{param}': {poc}",
+                    "3. Verify script execution or unescaped reflection.",
+                ],
+                evidence=[Evidence(summary=f"XSS PoC on {param}", extra={"poc": poc, "param": param, "dalfox_type": item.get("type")})],
+                meta={
+                    "discovery_engine": self.name,
+                    "engine_version": self.version,
+                    "program": context.program,
+                    "param": param,
+                    "cwe": item.get("cwe", "CWE-79"),
+                    "upstream_status": "dalfox_verified" if item.get("type") == "V" else "dalfox_poc_candidate",
+                    "active_discovery": True,
+                    "imported_finding": False,
+                    "verified_by": None,
+                    "reproduced_by": None,
+                },
+            )
+            findings.append(f)
 
         return findings
 

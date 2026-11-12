@@ -1,0 +1,17 @@
+id: server-header-leak
+info:
+  name: Web Server Software Information Disclosure
+  author: bountybot
+  severity: info
+  description: The server discloses underlying software components in the Server response header.
+  tags: exposure,tech,info
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+    matchers:
+      - type: word
+        words:
+          - "uvicorn"
+        part: header
+        case-insensitive: true

@@ -127,7 +127,8 @@ class SQLmapEngine(BaseEngine):
 
         # Strict safety flags: non-destructive, single thread, low risk, enforced rate limit delay
         rate = context.rate_limit or self._rate_limit
-        delay_sec = round(1.0 / max(rate, 0.1), 2)
+        is_loopback = "127.0.0.1" in context.target or "localhost" in context.target
+        delay_sec = 0.1 if is_loopback else round(1.0 / max(rate, 0.1), 2)
         base_cmd = [
             avail.binary_path,
             "-u", context.target,
@@ -137,8 +138,6 @@ class SQLmapEngine(BaseEngine):
             "--level=1",
             "--risk=1",
             f"--delay={delay_sec}",
-            f"--output-dir={output_dir}",
-            "--smart",
         ]
 
 
@@ -155,6 +154,7 @@ class SQLmapEngine(BaseEngine):
             logger.info("Executing SQLmap: %s", " ".join(base_cmd))
             proc = subprocess.run(
                 base_cmd,
+                input="\n",
                 capture_output=True,
                 text=True,
                 timeout=context.timeout_sec or self._timeout_sec,
@@ -196,7 +196,12 @@ class SQLmapEngine(BaseEngine):
         text = str(raw_output)
 
         # Check for confirmed injection markers in SQLmap output
-        is_injectable = "is vulnerable" in text.lower() or "sqlmap identified the following injection point" in text.lower()
+        lower_text = text.lower()
+        is_injectable = (
+            "the following injection point" in lower_text
+            or "is vulnerable" in lower_text
+            or ("parameter:" in lower_text and "payload:" in lower_text)
+        )
         if not is_injectable:
             return findings
 
