@@ -17,6 +17,7 @@ from bb.engines.semgrep import SemgrepEngine
 from bb.engines.shannon import ShannonEngine
 from bb.engines.sqlmap import SQLmapEngine
 from bb.engines.zap import ZAPEngine
+from bb.engines.claude_bughunter import ClaudeBugHunterEngine
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class EngineRegistry:
         """Registers official and specialist engines."""
         defaults = [
             ShannonEngine(),
+            ClaudeBugHunterEngine(),
             NucleiEngine(),
             SQLmapEngine(),
             DalfoxEngine(),
