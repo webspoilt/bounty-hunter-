@@ -22,9 +22,12 @@ from bb.engines.base import (
     EngineAvailability,
     EngineCategory,
     EngineExecutionResult,
+    EngineState,
     ExecutionContext,
+    FindingLifecycle,
 )
 from bb.models import Evidence, Exchange, Finding
+
 
 logger = logging.getLogger(__name__)
 
@@ -74,23 +77,24 @@ class SQLmapEngine(BaseEngine):
                 proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=3)
                 self._cached_avail = EngineAvailability(
                     name=self.name,
-                    available=True,
+                    state=EngineState.READY,
                     version=proc.stdout.strip() or "installed",
                     binary_path=binary,
                 )
                 return self._cached_avail
             except Exception:
-                self._cached_avail = EngineAvailability(name=self.name, available=True, binary_path=binary)
+                self._cached_avail = EngineAvailability(name=self.name, state=EngineState.READY, binary_path=binary)
                 return self._cached_avail
 
         self._cached_avail = EngineAvailability(
             name=self.name,
-            available=False,
+            state=EngineState.NOT_INSTALLED,
             version="not_installed",
             issues=["sqlmap not found in Windows PATH"],
             remediation_hint="Clone sqlmap (git clone https://github.com/sqlmapproject/sqlmap.git) or use Kali WSL",
         )
         return self._cached_avail
+
 
 
     def get_capabilities(self) -> list[str]:
@@ -119,7 +123,9 @@ class SQLmapEngine(BaseEngine):
         output_dir = self._work_dir / f"run_{int(start_time)}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Strict safety flags: non-destructive, single thread, low risk
+        # Strict safety flags: non-destructive, single thread, low risk, enforced rate limit delay
+        rate = context.rate_limit or self._rate_limit
+        delay_sec = round(1.0 / max(rate, 0.1), 2)
         base_cmd = [
             avail.binary_path,
             "-u", context.target,
@@ -128,9 +134,11 @@ class SQLmapEngine(BaseEngine):
             "--threads=1",
             "--level=1",
             "--risk=1",
+            f"--delay={delay_sec}",
             f"--output-dir={output_dir}",
             "--smart",
         ]
+
 
         if context.dry_run:
             return EngineExecutionResult(
@@ -194,14 +202,14 @@ class SQLmapEngine(BaseEngine):
         host = parsed.netloc
 
         f = Finding(
-            title=f"[SQLmap] Confirmed SQL Injection on {parsed.path}",
+            title=f"[SQLmap] Identified SQL Injection on {parsed.path}",
             bug_class="sqli",
             severity="critical",
-            confidence="high",
+            confidence="medium",  # Candidate finding until independently verified
             host=host,
             url=context.target,
-            status="verified",
-            summary=f"SQLmap confirmed SQL injection on endpoint {context.target}.",
+            status=FindingLifecycle.DISCOVERED.value,  # Starts as DISCOVERED
+            summary=f"SQLmap identified SQL injection on endpoint {context.target}.",
             impact="An attacker can execute arbitrary SQL queries against the database, leading to complete database compromise and confidential data exfiltration.",
             remediation="Enforce parameterized queries (prepared statements) for all database operations.",
             steps=[
@@ -215,8 +223,12 @@ class SQLmapEngine(BaseEngine):
                 "engine_version": self.version,
                 "program": context.program,
                 "cwe": "CWE-89",
+                "upstream_status": "sqlmap_confirmed_injection",
+                "verified_by": None,
+                "reproduced_by": None,
             },
         )
+
         findings.append(f)
         return findings
 

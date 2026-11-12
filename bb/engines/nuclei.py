@@ -21,9 +21,12 @@ from bb.engines.base import (
     EngineAvailability,
     EngineCategory,
     EngineExecutionResult,
+    EngineState,
     ExecutionContext,
+    FindingLifecycle,
 )
 from bb.models import Evidence, Exchange, Finding
+
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +40,7 @@ class NucleiEngine(BaseEngine):
         self._rate_limit = 3.0
         self._timeout_sec = 240
         self._tags = "cve,exposure,misconfig,takeover"
+        self._cached_avail: EngineAvailability | None = None
 
     @property
     def name(self) -> str:
@@ -64,26 +68,32 @@ class NucleiEngine(BaseEngine):
         return EngineCategory.DAST
 
     def check_availability(self) -> EngineAvailability:
+        if self._cached_avail is not None:
+            return self._cached_avail
         binary = shutil.which("nuclei") or shutil.which("nuclei.exe")
         if binary:
             try:
-                proc = subprocess.run([binary, "-version"], capture_output=True, text=True, timeout=5)
-                return EngineAvailability(
+                proc = subprocess.run([binary, "-version"], capture_output=True, text=True, timeout=3)
+                self._cached_avail = EngineAvailability(
                     name=self.name,
-                    available=True,
+                    state=EngineState.READY,
                     version=proc.stdout.strip().splitlines()[0] if proc.stdout else "installed",
                     binary_path=binary,
                 )
+                return self._cached_avail
             except Exception:
-                return EngineAvailability(name=self.name, available=True, binary_path=binary)
+                self._cached_avail = EngineAvailability(name=self.name, state=EngineState.READY, binary_path=binary)
+                return self._cached_avail
 
-        return EngineAvailability(
+        self._cached_avail = EngineAvailability(
             name=self.name,
-            available=False,
+            state=EngineState.NOT_INSTALLED,
             version="not_installed",
             issues=["nuclei executable not found in PATH"],
             remediation_hint="Download from https://github.com/projectdiscovery/nuclei/releases or 'go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest'",
         )
+        return self._cached_avail
+
 
     def get_capabilities(self) -> list[str]:
         return ["cve", "exposure", "misconfig", "subdomain_takeover", "default_credentials", "api_leaks"]
@@ -202,10 +212,10 @@ class NucleiEngine(BaseEngine):
                         title=f"[Nuclei] {name}",
                         bug_class=self._map_template_to_bug_class(template_id, info),
                         severity=severity if severity in ("low", "medium", "high", "critical") else "medium",
-                        confidence="high",
+                        confidence="medium",  # Candidate finding until independently verified
                         host=parsed.netloc,
                         url=matched,
-                        status="verified",
+                        status=FindingLifecycle.DISCOVERED.value,  # Starts as DISCOVERED
                         summary=info.get("description", f"Nuclei matched template {template_id} at {matched}"),
                         impact="Identified security misconfiguration, known CVE, or exposed sensitive endpoint.",
                         remediation="Apply vendor patch, disable exposed panel, or correct server configuration.",
@@ -221,8 +231,12 @@ class NucleiEngine(BaseEngine):
                             "program": context.program,
                             "template_id": template_id,
                             "cve_id": info.get("classification", {}).get("cve-id", []),
+                            "upstream_status": f"nuclei_{severity}",
+                            "verified_by": None,
+                            "reproduced_by": None,
                         },
                     )
+
                     findings.append(f_obj)
                 except Exception:
                     continue

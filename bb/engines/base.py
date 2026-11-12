@@ -22,24 +22,50 @@ class EngineCategory(str, Enum):
     SPECIALIST = "specialist"
 
 
+class EngineState(str, Enum):
+    NOT_INSTALLED = "NOT_INSTALLED"
+    INSTALLED = "INSTALLED"
+    READY = "READY"
+    BLOCKED_DEPENDENCY = "BLOCKED_DEPENDENCY"
+    CONFIGURATION_REQUIRED = "CONFIGURATION_REQUIRED"
+    EXECUTION_FAILED = "EXECUTION_FAILED"
+    VERIFIED_OPERATIONAL = "VERIFIED_OPERATIONAL"
+
+
+class FindingLifecycle(str, Enum):
+    DISCOVERED = "DISCOVERED"
+    HYPOTHESIS = "HYPOTHESIS"
+    REPRODUCING = "REPRODUCING"
+    VERIFIED = "VERIFIED"
+    IMPACT_ASSESSED = "IMPACT_ASSESSED"
+    REPORT_READY = "REPORT_READY"
+    HUMAN_APPROVAL = "HUMAN_APPROVAL"
+
+
 @dataclass
 class EngineAvailability:
     name: str
-    available: bool
+    state: EngineState
     version: str = "unknown"
     binary_path: str | None = None
     issues: list[str] = field(default_factory=list)
     remediation_hint: str = ""
 
+    @property
+    def available(self) -> bool:
+        return self.state in (EngineState.READY, EngineState.VERIFIED_OPERATIONAL)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            "state": self.state.value,
             "available": self.available,
             "version": self.version,
             "binary_path": self.binary_path,
             "issues": self.issues,
             "remediation_hint": self.remediation_hint,
         }
+
 
 
 @dataclass

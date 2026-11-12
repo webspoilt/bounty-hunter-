@@ -21,9 +21,12 @@ from bb.engines.base import (
     EngineAvailability,
     EngineCategory,
     EngineExecutionResult,
+    EngineState,
     ExecutionContext,
+    FindingLifecycle,
 )
 from bb.models import Evidence, Finding
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,7 @@ class DalfoxEngine(BaseEngine):
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._rate_limit = 3.0
         self._timeout_sec = 120
+        self._cached_avail: EngineAvailability | None = None
 
     @property
     def name(self) -> str:
@@ -63,26 +67,32 @@ class DalfoxEngine(BaseEngine):
         return EngineCategory.SPECIALIST
 
     def check_availability(self) -> EngineAvailability:
+        if self._cached_avail is not None:
+            return self._cached_avail
         binary = shutil.which("dalfox") or shutil.which("dalfox.exe")
         if binary:
             try:
-                proc = subprocess.run([binary, "version"], capture_output=True, text=True, timeout=5)
-                return EngineAvailability(
+                proc = subprocess.run([binary, "version"], capture_output=True, text=True, timeout=3)
+                self._cached_avail = EngineAvailability(
                     name=self.name,
-                    available=True,
+                    state=EngineState.READY,
                     version=proc.stdout.strip().splitlines()[0] if proc.stdout else "installed",
                     binary_path=binary,
                 )
+                return self._cached_avail
             except Exception:
-                return EngineAvailability(name=self.name, available=True, binary_path=binary)
+                self._cached_avail = EngineAvailability(name=self.name, state=EngineState.READY, binary_path=binary)
+                return self._cached_avail
 
-        return EngineAvailability(
+        self._cached_avail = EngineAvailability(
             name=self.name,
-            available=False,
+            state=EngineState.NOT_INSTALLED,
             version="not_installed",
             issues=["dalfox not found in PATH"],
             remediation_hint="Download from https://github.com/hahwul/dalfox/releases or 'go install github.com/hahwul/dalfox/v2@latest'",
         )
+        return self._cached_avail
+
 
     def get_capabilities(self) -> list[str]:
         return ["xss", "reflected_xss", "stored_xss", "dom_xss", "blind_xss"]
@@ -176,14 +186,14 @@ class DalfoxEngine(BaseEngine):
                 parsed = urlparse(context.target)
 
                 f = Finding(
-                    title=f"[Dalfox] Verified XSS on parameter '{param}'",
+                    title=f"[Dalfox] Potential XSS on parameter '{param}'",
                     bug_class="xss",
                     severity="high" if severity in ("high", "critical") else "medium",
-                    confidence="high",
+                    confidence="medium",  # Candidate finding until independently verified
                     host=parsed.netloc,
                     url=context.target,
-                    status="verified",
-                    summary=f"Dalfox verified Cross-Site Scripting on parameter '{param}' at {context.target}.",
+                    status=FindingLifecycle.DISCOVERED.value,  # Starts as DISCOVERED
+                    summary=f"Dalfox flagged Cross-Site Scripting on parameter '{param}' at {context.target}.",
                     impact="An attacker can execute arbitrary JavaScript in the victim's browser context, steal session cookies, or initiate unauthorized state-changing actions.",
                     remediation="Apply context-aware HTML entity encoding or Content-Security-Policy (CSP) headers.",
                     steps=[
@@ -198,8 +208,12 @@ class DalfoxEngine(BaseEngine):
                         "program": context.program,
                         "param": param,
                         "cwe": "CWE-79",
+                        "upstream_status": "dalfox_poc_candidate",
+                        "verified_by": None,
+                        "reproduced_by": None,
                     },
                 )
+
                 findings.append(f)
             except Exception:
                 continue

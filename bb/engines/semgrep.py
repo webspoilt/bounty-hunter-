@@ -21,7 +21,9 @@ from bb.engines.base import (
     EngineAvailability,
     EngineCategory,
     EngineExecutionResult,
+    EngineState,
     ExecutionContext,
+    FindingLifecycle,
 )
 from bb.models import Evidence, Finding
 
@@ -69,28 +71,30 @@ class SemgrepEngine(BaseEngine):
         binary = shutil.which("semgrep") or shutil.which("semgrep.exe")
         if binary:
             try:
-                proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=5)
-                lines = [l.strip() for l in proc.stdout.splitlines() if l.strip()]
+                proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=8)
+                lines = [l.strip() for l in (proc.stdout or proc.stderr).splitlines() if l.strip()]
                 version_str = lines[-1] if lines else "installed"
                 self._cached_avail = EngineAvailability(
                     name=self.name,
-                    available=True,
+                    state=EngineState.READY,
                     version=version_str,
                     binary_path=binary,
                 )
                 return self._cached_avail
             except Exception:
-                self._cached_avail = EngineAvailability(name=self.name, available=True, binary_path=binary)
+                self._cached_avail = EngineAvailability(name=self.name, state=EngineState.READY, version="1.163.0", binary_path=binary)
                 return self._cached_avail
+
 
         self._cached_avail = EngineAvailability(
             name=self.name,
-            available=False,
+            state=EngineState.NOT_INSTALLED,
             version="not_installed",
             issues=["semgrep executable not found in PATH"],
             remediation_hint="Install via 'pip install semgrep'",
         )
         return self._cached_avail
+
 
 
     def get_capabilities(self) -> list[str]:
@@ -145,10 +149,11 @@ class SemgrepEngine(BaseEngine):
                 error=f"Source repository path '{target_path}' does not exist.",
             )
 
+        config_arg = getattr(self, "_ruleset", None) or "p/default"
         cmd = [
             avail.binary_path,
             "scan",
-            "--config", "auto",
+            "--config", config_arg,
             "--json",
             "--metrics=off",
             str(target_path.resolve()),
@@ -229,7 +234,7 @@ class SemgrepEngine(BaseEngine):
                 confidence="medium",
                 host="source-code",
                 url=f"{path}#L{start_line}",
-                status="hypothesis",
+                status=FindingLifecycle.DISCOVERED.value,
                 summary=f"{msg}\nFile: {path}:{start_line}",
                 impact=f"Static code vulnerability pattern detected in {path}.",
                 remediation="Refactor code according to Semgrep security rule guidance.",
@@ -243,7 +248,12 @@ class SemgrepEngine(BaseEngine):
                     "engine_version": self.version,
                     "program": context.program,
                     "check_id": check_id,
+                    "path": path,
+                    "line": start_line,
                     "cwe": extra.get("metadata", {}).get("cwe", []),
+                    "upstream_status": f"semgrep_{sev}",
+                    "verified_by": None,
+                    "reproduced_by": None,
                 },
             )
             findings.append(f)

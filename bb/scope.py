@@ -566,7 +566,7 @@ class ScopeWeaverNormalizer:
         valid_in = [a["raw"] for a in norm_in if a.get("valid")]
         valid_out = [a["raw"] for a in norm_out if a.get("valid")]
 
-        return Scope(
+        return Scope.from_entries(
             program=program,
             in_scope=valid_in,
             out_of_scope=valid_out,

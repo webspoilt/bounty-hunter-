@@ -68,13 +68,14 @@ class EngineRegistry:
 
     def format_engines_table(self) -> str:
         lines = [
-            f"{'ENGINE NAME':<18} {'CATEGORY':<12} {'STATUS':<10} {'VERSION':<24} {'LICENSE':<10} {'OFFICIAL REPO'}",
-            "─" * 110,
+            f"{'ENGINE NAME':<18} {'CATEGORY':<12} {'STATE':<22} {'VERSION':<26} {'LICENSE':<10} {'OFFICIAL REPO'}",
+            "─" * 120,
         ]
         for eng in self._engines.values():
             avail = eng.check_availability()
-            status_str = "READY" if avail.available else "MISSING"
+            state_str = avail.state.value
             lines.append(
-                f"{eng.name:<18} {eng.category.value:<12} {status_str:<10} {avail.version[:22]:<24} {eng.license:<10} {eng.official_repository}"
+                f"{eng.name:<18} {eng.category.value:<12} {state_str:<22} {avail.version[:24]:<26} {eng.license:<10} {eng.official_repository}"
             )
         return "\n".join(lines)
+

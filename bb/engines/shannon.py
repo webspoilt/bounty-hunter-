@@ -22,7 +22,9 @@ from bb.engines.base import (
     EngineAvailability,
     EngineCategory,
     EngineExecutionResult,
+    EngineState,
     ExecutionContext,
+    FindingLifecycle,
 )
 from bb.models import Evidence, Exchange, Finding
 
@@ -68,43 +70,73 @@ class ShannonEngine(BaseEngine):
     def check_availability(self) -> EngineAvailability:
         if self._cached_avail is not None:
             return self._cached_avail
-        # Check npm / npx first
+
         npx_path = shutil.which("npx")
         node_path = shutil.which("node")
         docker_path = shutil.which("docker")
 
+        # Test if Docker daemon is running (mandatory for Shannon worker containers)
+        docker_running = False
+        docker_version = "unknown"
+        if docker_path:
+            try:
+                proc_d = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=3)
+                docker_running = (proc_d.returncode == 0)
+                if docker_running:
+                    ver_proc = subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"], capture_output=True, text=True, timeout=3)
+                    docker_version = ver_proc.stdout.strip() or "running"
+            except Exception:
+                docker_running = False
+
         if npx_path and node_path:
             try:
-                proc = subprocess.run(["node", "-v"], capture_output=True, text=True, timeout=5)
+                proc = subprocess.run(["node", "-v"], capture_output=True, text=True, timeout=3)
+                node_ver = proc.stdout.strip()
+            except Exception:
+                node_ver = "installed"
+
+            # Shannon CLI uses npx, but spawns worker containers via Docker
+            if not docker_running:
                 self._cached_avail = EngineAvailability(
                     name=self.name,
-                    available=True,
-                    version=f"npx (Node {proc.stdout.strip()})",
+                    state=EngineState.BLOCKED_DEPENDENCY,
+                    version=f"npx ({node_ver}) [Docker daemon STOPPED]",
                     binary_path=npx_path,
+                    issues=[
+                        "Node.js/npx is installed, but Docker daemon is stopped",
+                        "Shannon requires a running Docker daemon to launch worker containers",
+                    ],
+                    remediation_hint="Start Docker Desktop daemon to enable Shannon worker execution",
                 )
                 return self._cached_avail
-            except Exception:
-                self._cached_avail = EngineAvailability(name=self.name, available=True, binary_path=npx_path)
-                return self._cached_avail
 
-        if docker_path:
+            # Both npx and Docker daemon running
             self._cached_avail = EngineAvailability(
                 name=self.name,
-                available=True,
-                version="Docker image (keygraph/shannon)",
+                state=EngineState.READY,
+                version=f"npx ({node_ver}) / Docker {docker_version}",
+                binary_path=npx_path,
+            )
+            return self._cached_avail
+
+        if docker_path and docker_running:
+            self._cached_avail = EngineAvailability(
+                name=self.name,
+                state=EngineState.READY,
+                version=f"Docker container ({docker_version})",
                 binary_path=docker_path,
-                remediation_hint="Can run Shannon container via Docker",
             )
             return self._cached_avail
 
         self._cached_avail = EngineAvailability(
             name=self.name,
-            available=False,
+            state=EngineState.NOT_INSTALLED,
             version="not_installed",
-            issues=["Neither Node.js/npx nor Docker found in PATH"],
-            remediation_hint="Install Node.js (https://nodejs.org/) to enable npx @keygraph/shannon@latest",
+            issues=["Neither Node.js/npx nor running Docker daemon found"],
+            remediation_hint="Install Node.js (https://nodejs.org/) and start Docker Desktop",
         )
         return self._cached_avail
+
 
 
     def get_capabilities(self) -> list[str]:
@@ -265,12 +297,12 @@ class ShannonEngine(BaseEngine):
                     title=f"[Shannon] {rule_id}: {msg[:80]}",
                     bug_class=self._map_rule_to_bug_class(rule_id),
                     severity=severity,
-                    confidence="high",  # Shannon proves by live exploitation
+                    confidence="medium",  # Unverified candidate until independently verified
                     host=host,
                     url=target_url,
-                    status="verified",
+                    status=FindingLifecycle.DISCOVERED.value,  # Starts as DISCOVERED
                     summary=msg,
-                    impact=f"Autonomously proven attack path discovered by Shannon against {target_url}.",
+                    impact=f"Autonomously flagged attack path reported by Shannon against {target_url}.",
                     remediation="Apply secure coding controls on vulnerable source location identified by Shannon.",
                     steps=[
                         f"1. Target repository: {context.source_repo}",
@@ -282,7 +314,9 @@ class ShannonEngine(BaseEngine):
                         "engine_version": self.version,
                         "program": context.program,
                         "rule_id": rule_id,
-                        "sarif_level": level,
+                        "upstream_status": f"sarif_{level}",
+                        "verified_by": None,
+                        "reproduced_by": None,
                     },
                 )
                 findings.append(f)

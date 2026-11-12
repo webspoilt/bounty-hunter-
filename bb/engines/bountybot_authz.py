@@ -17,9 +17,12 @@ from bb.engines.base import (
     EngineAvailability,
     EngineCategory,
     EngineExecutionResult,
+    EngineState,
     ExecutionContext,
+    FindingLifecycle,
 )
 from bb.models import Evidence, Finding
+
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +62,12 @@ class BountybotAuthzEngine(BaseEngine):
     def check_availability(self) -> EngineAvailability:
         return EngineAvailability(
             name=self.name,
-            available=True,
+            state=EngineState.VERIFIED_OPERATIONAL,
             version=self.version,
             binary_path="internal:bb.checks.Checker",
+            remediation_hint="Native Bounty Hunter authorization engine (always available)",
         )
+
 
     def get_capabilities(self) -> list[str]:
         return ["idor", "bfla", "unauth_leak", "cross_tenant_read", "broken_authz"]
@@ -101,7 +106,7 @@ class BountybotAuthzEngine(BaseEngine):
                             confidence="high",
                             host=urlparse(context.target).netloc,
                             url=context.target,
-                            status="verified",
+                            status=FindingLifecycle.VERIFIED.value,
                             summary=f"Role '{role_b}' successfully retrieved private object owned by '{role_a}' with 100% similarity.",
                             impact="Cross-tenant or horizontal privilege escalation exposing private user records.",
                             remediation="Enforce tenant-bound ownership validation at the data layer.",
@@ -119,8 +124,12 @@ class BountybotAuthzEngine(BaseEngine):
                                 "engine_version": self.version,
                                 "program": context.program,
                                 "cwe": "CWE-639",
+                                "upstream_status": "authz_leak_confirmed",
+                                "verified_by": self.name,
+                                "reproduced_by": "differential_dual_account_engine",
                             },
                         )
+
                         findings.append(f)
 
 

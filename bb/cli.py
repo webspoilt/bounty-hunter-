@@ -1700,7 +1700,7 @@ def cmd_engines(args) -> int:
         print("\n=== BOUNTY HUNTER 2.0 - ENGINE STATUS ===")
         for eng in reg.list_engines():
             avail = eng.check_availability()
-            mark = "READY  " if avail.available else "MISSING"
+            mark = avail.state.value
             print(f"[{mark}] {eng.name:<18} ({eng.display_name})")
             print(f"        Category: {eng.category.value} | Version: {avail.version}")
             print(f"        Repo: {eng.official_repository} | License: {eng.license}")
@@ -1712,6 +1712,7 @@ def cmd_engines(args) -> int:
                 print(f"        Remediation: {avail.remediation_hint}")
             print()
         return 0
+
     elif action == "doctor":
         diag = DependencyDoctor.run_full_diagnosis()
         print("\n" + DependencyDoctor.format_report(diag) + "\n")
@@ -1737,7 +1738,7 @@ def cmd_engines(args) -> int:
         print(f"Official Repo:       {eng.official_repository}")
         print(f"License:             {eng.license}")
         avail = eng.check_availability()
-        print(f"Status:              {'READY' if avail.available else 'NOT INSTALLED'}")
+        print(f"State:               {avail.state.value}")
         if avail.remediation_hint:
             print(f"\nSetup & Installation Guide:\n  {avail.remediation_hint}")
         print()
