@@ -1687,6 +1687,78 @@ def cmd_intel(args) -> int:
         engine.close()
 
 
+def cmd_engines(args) -> int:
+    """Manage external security engines, autonomous agents, and dependency diagnosis."""
+    from bb.engines import EngineRegistry, DependencyDoctor
+    reg = EngineRegistry.get_instance()
+    action = getattr(args, "engine_action", None) or "list"
+
+    if action == "list":
+        print("\n" + reg.format_engines_table() + "\n")
+        return 0
+    elif action == "status":
+        print("\n=== BOUNTY HUNTER 2.0 - ENGINE STATUS ===")
+        for eng in reg.list_engines():
+            avail = eng.check_availability()
+            mark = "READY  " if avail.available else "MISSING"
+            print(f"[{mark}] {eng.name:<18} ({eng.display_name})")
+            print(f"        Category: {eng.category.value} | Version: {avail.version}")
+            print(f"        Repo: {eng.official_repository} | License: {eng.license}")
+            if avail.binary_path:
+                print(f"        Binary: {avail.binary_path}")
+            if avail.issues:
+                print(f"        Issues: {', '.join(avail.issues)}")
+            if avail.remediation_hint:
+                print(f"        Remediation: {avail.remediation_hint}")
+            print()
+        return 0
+    elif action == "doctor":
+        diag = DependencyDoctor.run_full_diagnosis()
+        print("\n" + DependencyDoctor.format_report(diag) + "\n")
+        return 0
+    elif action == "audit":
+        print("\n=== BOUNTY HUNTER 2.0 - REGISTERED CAPABILITIES AUDIT ===")
+        for eng in reg.list_engines():
+            print(f"{eng.name:<18} [{eng.category.value:<10}] : {', '.join(eng.get_capabilities())}")
+        print()
+        return 0
+    elif action == "configure":
+        eng_name = getattr(args, "engine_name", None)
+        if not eng_name:
+            print("Specify an engine to configure. Example: bb engines configure shannon")
+            return 1
+        eng = reg.get(eng_name)
+        if not eng:
+            print(f"Engine '{eng_name}' not found.")
+            return 1
+        print(f"\n[ENGINE CONFIGURATION: {eng.display_name.upper()}]")
+        print(f"Name:                {eng.name}")
+        print(f"Category:            {eng.category.value}")
+        print(f"Official Repo:       {eng.official_repository}")
+        print(f"License:             {eng.license}")
+        avail = eng.check_availability()
+        print(f"Status:              {'READY' if avail.available else 'NOT INSTALLED'}")
+        if avail.remediation_hint:
+            print(f"\nSetup & Installation Guide:\n  {avail.remediation_hint}")
+        print()
+        return 0
+    elif action == "benchmark":
+        from bb.benchmark.owasp_bench import run_lab_benchmark
+        return run_lab_benchmark(args)
+    print(f"Unknown engine action: {action}")
+    return 1
+
+
+def cmd_lab(args) -> int:
+    """OWASP Security Practice Lab commands and benchmarks."""
+    action = getattr(args, "lab_action", None) or "benchmark"
+    if action == "benchmark":
+        from bb.benchmark.owasp_bench import run_lab_benchmark
+        return run_lab_benchmark(args)
+    print(f"Unknown lab action: {action}")
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="bb", description=f"bountybot {__version__} — "
                                "scope-gated bug-bounty pipeline (nothing auto-submits)")
@@ -2142,6 +2214,35 @@ def build_parser() -> argparse.ArgumentParser:
 
     az_status = az_sub.add_parser("status", help="show authorization investigation status and checkpoints")
     az_status.set_defaults(func=cmd_authz)
+
+    # Engines & External Security Tools (Bounty Hunter 2.0)
+    eng = sub.add_parser("engines", help="manage external security tools, autonomous agents, and specialist engines")
+    eng_sub = eng.add_subparsers(dest="engine_action")
+
+    eng_list = eng_sub.add_parser("list", help="list all registered security engines and status")
+    eng_list.set_defaults(func=cmd_engines)
+
+    eng_status = eng_sub.add_parser("status", help="show live diagnostic status of local runtimes and containers")
+    eng_status.set_defaults(func=cmd_engines)
+
+    eng_doctor = eng_sub.add_parser("doctor", help="audit system dependencies, binaries, Docker/WSL, and credentials")
+    eng_doctor.set_defaults(func=cmd_engines)
+
+    eng_audit = eng_sub.add_parser("audit", help="review engine audit history and capabilities")
+    eng_audit.set_defaults(func=cmd_engines)
+
+    eng_config = eng_sub.add_parser("configure", help="configure execution settings or view setup guide for an engine")
+    eng_config.add_argument("engine_name", nargs="?", help="name of the engine to configure (e.g. shannon, nuclei)")
+    eng_config.set_defaults(func=cmd_engines)
+
+    eng_bench = eng_sub.add_parser("benchmark", help="run multi-engine benchmark comparison")
+    eng_bench.set_defaults(func=cmd_engines)
+
+    # OWASP Lab Benchmark Command
+    lb = sub.add_parser("lab", help="OWASP Security Practice Lab commands and benchmarks")
+    lb_sub = lb.add_subparsers(dest="lab_action")
+    lb_bench = lb_sub.add_parser("benchmark", help="run benchmark evaluation against local OWASP training lab")
+    lb_bench.set_defaults(func=cmd_lab)
 
     return p
 

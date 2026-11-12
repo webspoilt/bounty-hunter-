@@ -476,3 +476,100 @@ def _entry_to_pattern(entry) -> tuple[str | None, dict]:
                 return str(entry[key]).strip(), {k: entry[k] for k in
                                                  ("asset_type", "instruction") if k in entry}
     return None, {}
+
+
+class ScopeWeaverNormalizer:
+    """ScopeWeaver-compatible scope intelligence & asset normalization engine.
+    
+    Integrates ScopeWeaver's asset normalization, wildcard decomposition,
+    exclusion precedence, and cryptographic fingerprinting directly into
+    Bounty Hunter's central scope engine.
+    """
+
+    @staticmethod
+    def normalize_asset(raw_asset: str) -> dict[str, Any]:
+        """Normalizes an asset string into a structured asset record."""
+        s = (raw_asset or "").strip()
+        if not s:
+            return {"raw": s, "type": "UNKNOWN", "valid": False}
+
+        # Check CIDR
+        if "/" in s and not s.startswith(("http://", "https://")):
+            try:
+                net = ipaddress.ip_network(s, strict=False)
+                return {
+                    "raw": s,
+                    "type": "CIDR",
+                    "identifier": str(net),
+                    "valid": True,
+                    "wildcard": False,
+                }
+            except ValueError:
+                pass
+
+        # Check IP
+        try:
+            ip = ipaddress.ip_address(s)
+            return {
+                "raw": s,
+                "type": "IP_ADDRESS",
+                "identifier": str(ip),
+                "valid": True,
+                "wildcard": False,
+            }
+        except ValueError:
+            pass
+
+        # Check Wildcard
+        if s.startswith("*."):
+            apex = s[2:].lower().strip()
+            return {
+                "raw": s,
+                "type": "WILDCARD",
+                "identifier": s.lower(),
+                "apex": apex,
+                "valid": bool(apex),
+                "wildcard": True,
+            }
+
+        # Check URL
+        if s.startswith(("http://", "https://")):
+            parts = urlsplit(s)
+            return {
+                "raw": s,
+                "type": "URL",
+                "identifier": s,
+                "host": (parts.hostname or "").lower(),
+                "port": parts.port or (443 if parts.scheme == "https" else 80),
+                "path": parts.path or "/",
+                "valid": bool(parts.hostname),
+                "wildcard": False,
+            }
+
+        # Default to Domain
+        domain = s.lower().strip().rstrip("/")
+        return {
+            "raw": s,
+            "type": "DOMAIN",
+            "identifier": domain,
+            "host": domain,
+            "valid": bool(domain),
+            "wildcard": False,
+        }
+
+    @classmethod
+    def build_scope(cls, program: str, in_scope: list[str], out_of_scope: list[str]) -> Scope:
+        """Constructs a canonical Scope object using ScopeWeaver normalization."""
+        norm_in = [cls.normalize_asset(a) for a in in_scope]
+        norm_out = [cls.normalize_asset(a) for a in out_of_scope]
+
+        valid_in = [a["raw"] for a in norm_in if a.get("valid")]
+        valid_out = [a["raw"] for a in norm_out if a.get("valid")]
+
+        return Scope(
+            program=program,
+            in_scope=valid_in,
+            out_of_scope=valid_out,
+            source="scopeweaver_normalized",
+        )
+

@@ -48,6 +48,9 @@ def load_project_env(override: bool = False) -> Path | None:
 load_project_env(override=False)
 
 DATA = Path(os.environ.get("BB_DATA", ROOT / "data"))
+PROJECT_ROOT = ROOT
+DATA_DIR = DATA
+
 
 DB_PATH = DATA / "bountybot.db"
 KB_PATH = DATA / "kb.json"
