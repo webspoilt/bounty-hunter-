@@ -12,13 +12,17 @@ Integrates PortSwigger Burp Suite (Community & Professional) into the unified en
 from __future__ import annotations
 
 import base64
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import logging
 import os
 import re
 import shutil
 import socket
+import threading
 import time
+import urllib.error
+import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,7 +31,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from bb.config import DATA_DIR
+from bb.config import DATA_DIR, now_iso
 from bb.engines.base import (
     BaseEngine,
     EngineAvailability,
@@ -64,6 +68,178 @@ class BurpHttpTransaction:
     timestamp: str = ""
     comment: str = ""
     source: str = "burp_proxy"
+
+
+class BurpProxyListener:
+    """Lightweight HTTP proxy listener capable of intercepting and capturing HTTP traffic
+    in PortSwigger Burp Suite XML and JSON formats.
+    """
+
+    def __init__(self, host: str = DEFAULT_BURP_PROXY_HOST, port: int = DEFAULT_BURP_PROXY_PORT):
+        self.host = host
+        self.port = port
+        self.transactions: list[BurpHttpTransaction] = []
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
+        self.is_running = False
+
+    def start(self) -> None:
+        """Starts proxy listener on host:port in a background daemon thread."""
+        if self.is_running:
+            return
+
+        listener_ref = self
+
+        class ProxyHandler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):
+                pass  # Suppress default server console output
+
+            def do_GET(self):
+                self._handle_forward()
+
+            def do_POST(self):
+                self._handle_forward()
+
+            def do_PUT(self):
+                self._handle_forward()
+
+            def do_DELETE(self):
+                self._handle_forward()
+
+            def do_PATCH(self):
+                self._handle_forward()
+
+            def do_HEAD(self):
+                self._handle_forward()
+
+            def do_OPTIONS(self):
+                self._handle_forward()
+
+            def _handle_forward(self):
+                raw_path = self.path
+                if raw_path.startswith("http://") or raw_path.startswith("https://"):
+                    target_url = raw_path
+                else:
+                    host_header = self.headers.get("Host", f"{listener_ref.host}:{listener_ref.port}")
+                    target_url = f"http://{host_header}{raw_path}"
+
+                parsed = urlparse(target_url)
+                dest_host = parsed.hostname or "127.0.0.1"
+                if dest_host not in ("127.0.0.1", "localhost", "::1"):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b"Target host outside permitted local testing scope.")
+                    return
+
+                content_length = int(self.headers.get("Content-Length", 0) or 0)
+                req_body = self.rfile.read(content_length) if content_length > 0 else b""
+
+                raw_req_lines = [f"{self.command} {self.path} {self.request_version}"]
+                for k, v in self.headers.items():
+                    raw_req_lines.append(f"{k}: {v}")
+                raw_request_str = "\r\n".join(raw_req_lines) + "\r\n\r\n" + (req_body.decode("utf-8", errors="replace") if req_body else "")
+
+                req = urllib.request.Request(
+                    target_url,
+                    data=req_body if self.command in ("POST", "PUT", "PATCH") and req_body else None,
+                    method=self.command,
+                )
+                for k, v in self.headers.items():
+                    if k.lower() not in ("host", "proxy-connection", "proxy-authorization", "content-length"):
+                        req.add_header(k, v)
+
+                resp_status = 502
+                resp_headers: dict[str, str] = {}
+                resp_body = b""
+                try:
+                    with urllib.request.urlopen(req, timeout=10.0) as resp:
+                        resp_status = resp.status
+                        resp_headers = dict(resp.headers)
+                        resp_body = resp.read()
+                except urllib.error.HTTPError as he:
+                    resp_status = he.code
+                    resp_headers = dict(he.headers)
+                    resp_body = he.read()
+                except Exception as exc:
+                    self.send_response(502)
+                    self.end_headers()
+                    self.wfile.write(f"Proxy forward failed: {exc}".encode("utf-8"))
+                    return
+
+                self.send_response(resp_status)
+                for k, v in resp_headers.items():
+                    if k.lower() not in ("transfer-encoding", "content-length", "connection"):
+                        self.send_header(k, v)
+                self.send_header("Content-Length", str(len(resp_body)))
+                self.end_headers()
+                self.wfile.write(resp_body)
+
+                raw_resp_lines = [f"HTTP/1.1 {resp_status}"]
+                for k, v in resp_headers.items():
+                    raw_resp_lines.append(f"{k}: {v}")
+                raw_resp_str = "\r\n".join(raw_resp_lines) + "\r\n\r\n" + (resp_body.decode("utf-8", errors="replace") if resp_body else "")
+
+                tx = BurpHttpTransaction(
+                    url=target_url,
+                    method=self.command,
+                    status=resp_status,
+                    host=dest_host,
+                    port=parsed.port or (443 if parsed.scheme == "https" else 80),
+                    protocol=parsed.scheme or "http",
+                    request_headers=dict(self.headers),
+                    request_body=req_body.decode("utf-8", errors="replace"),
+                    response_headers=resp_headers,
+                    response_body=resp_body.decode("utf-8", errors="replace"),
+                    raw_request=raw_request_str,
+                    raw_response=raw_resp_str,
+                    timestamp=now_iso(),
+                    comment="Captured via Burp Proxy Listener",
+                    source="burp_proxy_listener",
+                )
+                listener_ref.transactions.append(tx)
+
+        self._server = HTTPServer((self.host, self.port), ProxyHandler)
+        self.is_running = True
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stops proxy listener and releases socket."""
+        if self._server:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server = None
+        self.is_running = False
+
+    def export_to_burp_xml(self, output_path: Path) -> Path:
+        """Exports captured transactions to PortSwigger Burp XML items format."""
+        root = ET.Element("items", burpVersion="2026.9.3", exportTime=now_iso())
+        for tx in self.transactions:
+            item = ET.SubElement(root, "item")
+            ET.SubElement(item, "time").text = tx.timestamp
+            ET.SubElement(item, "url").text = tx.url
+            ET.SubElement(item, "host", ip=tx.host).text = tx.host
+            ET.SubElement(item, "port").text = str(tx.port)
+            ET.SubElement(item, "protocol").text = tx.protocol
+            ET.SubElement(item, "method").text = tx.method
+            ET.SubElement(item, "status").text = str(tx.status)
+            ET.SubElement(item, "comment").text = tx.comment
+            req_el = ET.SubElement(item, "request", base64="true")
+            req_el.text = base64.b64encode(tx.raw_request.encode("utf-8")).decode("ascii")
+            resp_el = ET.SubElement(item, "response", base64="true")
+            resp_el.text = base64.b64encode(tx.raw_response.encode("utf-8")).decode("ascii")
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tree = ET.ElementTree(root)
+        tree.write(str(output_path), encoding="utf-8", xml_declaration=True)
+        return output_path
+
+    def export_to_json(self, output_path: Path) -> Path:
+        """Exports captured transactions to JSON format."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        data = [t.__dict__ for t in self.transactions]
+        output_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return output_path
 
 
 class BurpSuiteEngine(BaseEngine):
@@ -282,7 +458,7 @@ class BurpSuiteEngine(BaseEngine):
             # Test proxy forwarding against target with polite rate limiting
             proxy_url = f"http://{self._proxy_host}:{self._proxy_port}"
             try:
-                with httpx.Client(proxies=proxy_url, timeout=10.0, verify=False) as client:
+                with httpx.Client(proxy=proxy_url, timeout=10.0, verify=False) as client:
                     time.sleep(1.0 / max(0.1, context.rate_limit))
                     r = client.get(context.target)
                     return EngineExecutionResult(
@@ -323,6 +499,14 @@ class BurpSuiteEngine(BaseEngine):
     # Traffic & Findings Import Subsystem
     # -------------------------------------------------------------
 
+    def start_proxy_listener(self, host: str | None = None, port: int | None = None) -> BurpProxyListener:
+        """Starts a local proxy listener on configured or specified host:port."""
+        target_host = host or self._proxy_host
+        target_port = port or self._proxy_port
+        listener = BurpProxyListener(host=target_host, port=target_port)
+        listener.start()
+        return listener
+
     def import_file(self, file_path: Path, context: ExecutionContext | None = None) -> list[Finding]:
         """Imports Burp XML items or Burp scanner issues and normalizes into Findings."""
         if not file_path.exists():
@@ -334,9 +518,9 @@ class BurpSuiteEngine(BaseEngine):
 
         # Determine if file is XML or JSON
         if text.strip().startswith("<?xml") or text.strip().startswith("<"):
-            return self._parse_burp_xml(text, program)
+            return self._parse_burp_xml(text, program, file_path=file_path)
         elif text.strip().startswith("{") or text.strip().startswith("["):
-            return self._parse_burp_json(text, program)
+            return self._parse_burp_json(text, program, file_path=file_path)
 
         logger.warning("Unrecognized Burp export format in: %s", file_path)
         return []
@@ -403,7 +587,7 @@ class BurpSuiteEngine(BaseEngine):
 
         return transactions
 
-    def _parse_burp_xml(self, xml_text: str, program: str) -> list[Finding]:
+    def _parse_burp_xml(self, xml_text: str, program: str, file_path: Path | None = None) -> list[Finding]:
         """Parses Burp Scanner Issues XML or Burp Items XML."""
         findings: list[Finding] = []
         try:
@@ -413,6 +597,9 @@ class BurpSuiteEngine(BaseEngine):
             issues = root.findall(".//issue")
             if issues:
                 for issue in issues:
+                    serial = issue.findtext("serialNumber", "")
+                    issue_type = issue.findtext("type", "")
+                    issue_id = serial or issue_type or f"burp_{len(findings)+1}"
                     name = issue.findtext("name", "Burp Issue")
                     host = issue.findtext("host", "")
                     path = issue.findtext("path", "")
@@ -450,13 +637,13 @@ class BurpSuiteEngine(BaseEngine):
                     bug_class = self._map_burp_name_to_bug_class(name)
 
                     f = Finding(
-                        title=f"[Burp] {name}: {location}",
+                        title=f"[Burp Imported] {name}: {location}",
                         bug_class=bug_class,
                         severity=severity,
                         confidence=confidence,
                         host=host,
                         url=f"{host.rstrip('/')}{path}" if host.startswith("http") else f"http://{host}{path}",
-                        status=FindingLifecycle.DISCOVERED.value, # Strict: NEVER auto-marked VERIFIED
+                        status=FindingLifecycle.DISCOVERED.value,  # Strict: NEVER auto-marked VERIFIED
                         summary=f"{name} at {location}.\n{detail}".strip(),
                         impact=f"Burp identified {name}. Threat background:\n{bg}".strip(),
                         remediation=remediation,
@@ -468,6 +655,11 @@ class BurpSuiteEngine(BaseEngine):
                             "program": program,
                             "burp_severity": sev_str,
                             "burp_confidence": conf_str,
+                            "burp_issue_id": issue_id,
+                            "source_file": str(file_path) if file_path else "burp_export.xml",
+                            "imported_finding": True,
+                            "active_discovery": False,
+                            "import_timestamp": now_iso(),
                             "upstream_status": "burp_reported",
                             "verified_by": None,
                             "reproduced_by": None,
@@ -478,7 +670,7 @@ class BurpSuiteEngine(BaseEngine):
             # If not issues, check if this is an <items> export with suspicious traffic
             items = root.findall(".//item")
             if items and not issues:
-                for item in items:
+                for idx, item in enumerate(items, 1):
                     status = item.findtext("status", "0")
                     url = item.findtext("url", "")
                     comment = item.findtext("comment", "")
@@ -495,7 +687,7 @@ class BurpSuiteEngine(BaseEngine):
                             confidence="low",
                             host=item.findtext("host", "127.0.0.1"),
                             url=url,
-                            status=FindingLifecycle.HYPOTHESIS.value,
+                            status=FindingLifecycle.DISCOVERED.value,
                             summary=f"Intercepted HTTP {status} response via Burp proxy. Comment: {comment or 'None'}",
                             impact="Traffic candidate requiring independent authorization and error inspection.",
                             remediation="Validate error handling and access control.",
@@ -504,6 +696,12 @@ class BurpSuiteEngine(BaseEngine):
                                 "discovery_engine": self.name,
                                 "program": program,
                                 "source": "burp_proxy_traffic",
+                                "source_file": str(file_path) if file_path else "burp_items.xml",
+                                "burp_issue_id": f"burp_traffic_{idx}",
+                                "imported_finding": True,
+                                "active_discovery": False,
+                                "import_timestamp": now_iso(),
+                                "upstream_status": "burp_reported",
                                 "verified_by": None,
                             },
                         )
@@ -514,13 +712,13 @@ class BurpSuiteEngine(BaseEngine):
 
         return findings
 
-    def _parse_burp_json(self, json_text: str, program: str) -> list[Finding]:
+    def _parse_burp_json(self, json_text: str, program: str, file_path: Path | None = None) -> list[Finding]:
         """Parses Burp JSON issue export."""
         findings: list[Finding] = []
         try:
             data = json.loads(json_text)
             items = data if isinstance(data, list) else data.get("issues", [])
-            for it in items:
+            for idx, it in enumerate(items, 1):
                 name = it.get("name", "Burp Issue")
                 host = it.get("host", "")
                 path = it.get("path", "")
@@ -528,7 +726,7 @@ class BurpSuiteEngine(BaseEngine):
                 conf = it.get("confidence", "firm").lower()
 
                 f = Finding(
-                    title=f"[Burp] {name}: {path}",
+                    title=f"[Burp Imported] {name}: {path}",
                     bug_class=self._map_burp_name_to_bug_class(name),
                     severity="high" if sev == "high" else "medium" if sev == "medium" else "low",
                     confidence="high" if conf == "certain" else "medium",
@@ -538,7 +736,17 @@ class BurpSuiteEngine(BaseEngine):
                     summary=it.get("detail", name),
                     impact="Potential security exposure identified by Burp Suite.",
                     remediation=it.get("remediation", "Apply vendor patch or input validation."),
-                    meta={"discovery_engine": self.name, "program": program, "verified_by": None},
+                    meta={
+                        "discovery_engine": self.name,
+                        "program": program,
+                        "burp_issue_id": it.get("id", f"burp_json_{idx}"),
+                        "source_file": str(file_path) if file_path else "burp_export.json",
+                        "imported_finding": True,
+                        "active_discovery": False,
+                        "import_timestamp": now_iso(),
+                        "upstream_status": "burp_reported",
+                        "verified_by": None,
+                    },
                 )
                 findings.append(f)
         except Exception as exc:

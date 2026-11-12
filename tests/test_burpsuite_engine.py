@@ -118,7 +118,11 @@ def test_burp_xml_issues_parsing(burp_engine, sample_xml):
     sqli = next(f for f in findings if f.bug_class == "sqli")
     assert sqli.severity == "high"
     assert sqli.confidence == "high"
-    assert sqli.status == FindingLifecycle.DISCOVERED.value # Crucial: NEVER auto-verified
+    assert sqli.status == FindingLifecycle.DISCOVERED.value  # Crucial: NEVER auto-verified
+    assert sqli.title.startswith("[Burp Imported]")
+    assert sqli.meta["imported_finding"] is True
+    assert sqli.meta["active_discovery"] is False
+    assert sqli.meta["burp_issue_id"] == "101"
     assert "UNION injection" in sqli.summary
     assert len(sqli.evidence) == 1
     assert "raw_request" in sqli.evidence[0].extra
@@ -127,6 +131,9 @@ def test_burp_xml_issues_parsing(burp_engine, sample_xml):
     assert xss.severity == "medium"
     assert xss.confidence == "medium"
     assert xss.status == FindingLifecycle.DISCOVERED.value
+    assert xss.title.startswith("[Burp Imported]")
+    assert xss.meta["imported_finding"] is True
+    assert xss.meta["active_discovery"] is False
 
 
 def test_burp_traffic_items_parsing(burp_engine, sample_items_xml):
@@ -141,6 +148,43 @@ def test_burp_traffic_items_parsing(burp_engine, sample_items_xml):
     assert "authorization" in tx.request_headers
     assert tx.request_headers["authorization"] == "Bearer session_bob_456"
     assert '{"username": "alice"}' in tx.response_body
+
+
+def test_burp_proxy_listener_capture(tmp_path: Path):
+    from bb.engines.burpsuite import BurpProxyListener
+    import httpx
+    import time
+
+    listener = BurpProxyListener(host="127.0.0.1", port=8991)
+    listener.start()
+    time.sleep(0.2)
+
+    try:
+        # Route a scoped request through our listener
+        proxy_url = "http://127.0.0.1:8991"
+        with httpx.Client(proxy=proxy_url, timeout=5.0) as client:
+            r = client.get("http://127.0.0.1:8000/api/lab/catalog")
+            assert r.status_code == 200
+
+        assert len(listener.transactions) == 1
+        tx = listener.transactions[0]
+        assert tx.url == "http://127.0.0.1:8000/api/lab/catalog"
+        assert tx.status == 200
+        assert "GET" in tx.raw_request
+        assert "200" in tx.raw_response
+
+        # Verify export to XML and JSON
+        xml_out = tmp_path / "test_captured.xml"
+        json_out = tmp_path / "test_captured.json"
+        listener.export_to_burp_xml(xml_out)
+        listener.export_to_json(json_out)
+
+        assert xml_out.exists()
+        assert json_out.exists()
+        assert "<items" in xml_out.read_text(encoding="utf-8")
+        assert "catalog" in json_out.read_text(encoding="utf-8")
+    finally:
+        listener.stop()
 
 
 def test_burp_configure_and_state(burp_engine):

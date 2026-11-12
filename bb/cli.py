@@ -1758,6 +1758,8 @@ def cmd_engines(args) -> int:
 
 
 def _handle_burp_action(args, burp, burp_act: str) -> int:
+    import httpx
+    import time
     from bb.config import DATA_DIR
     from bb.store import Store
 
@@ -1852,31 +1854,83 @@ def _handle_burp_action(args, burp, burp_act: str) -> int:
         host = avail.meta.get("proxy_host", "127.0.0.1")
         port = avail.meta.get("proxy_port", 8080)
         probe_url = getattr(args, "probe_url", "http://127.0.0.1:8000/api/lab/catalog")
+        capture = getattr(args, "capture", False)
+        program = getattr(args, "program", "owasp-lab") or "owasp-lab"
+        token = getattr(args, "token", None)
+
         print(f"\n[BURP PROXY CHECK] Testing proxy listener at {host}:{port}...")
 
         is_listening = burp._probe_proxy_listener(host, port)
+        listener = None
         if not is_listening:
-            print(f"✗ Burp proxy listener is NOT accepting connections at {host}:{port}.")
-            print("Please ensure Burp Suite is running and the listener is active:")
-            print("  1. In Burp Suite, navigate to: Settings -> Network -> Connections / Proxy")
-            print(f"  2. Verify a Proxy Listener is set to Running on: {host}:{port}")
-            print("  3. For Community Edition, start Burp Suite manually before routing traffic.\n")
-            return 1
+            if capture:
+                print(f"Starting local Burp-compatible proxy listener on {host}:{port} for traffic capture...")
+                try:
+                    listener = burp.start_proxy_listener(host, port)
+                    time.sleep(0.2)
+                    is_listening = burp._probe_proxy_listener(host, port)
+                except Exception as exc:
+                    print(f"✗ Failed to start proxy listener: {exc}")
+                    return 1
+            else:
+                print(f"✗ Burp proxy listener is NOT accepting connections at {host}:{port}.")
+                print("Please ensure Burp Suite is running and the listener is active:")
+                print("  1. In Burp Suite, navigate to: Settings -> Network -> Connections / Proxy")
+                print(f"  2. Verify a Proxy Listener is set to Running on: {host}:{port}")
+                print("  3. For Community Edition, start Burp Suite manually before routing traffic.")
+                print("  (Tip: use --capture to run a local Burp proxy listener session)\n")
+                return 1
 
         print(f"✓ Proxy listener is actively listening at {host}:{port}.")
         print(f"Sending scoped probe request through proxy to {probe_url}...")
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         try:
             proxy_url = f"http://{host}:{port}"
-            with httpx.Client(proxies=proxy_url, timeout=5.0, verify=False) as client:
+            with httpx.Client(proxy=proxy_url, timeout=5.0, verify=False) as client:
                 t0 = time.time()
-                r = client.get(probe_url)
+                r = client.get(probe_url, headers=headers)
                 lat = (time.time() - t0) * 1000.0
                 print(f"✓ Proxy forward successful! HTTP Status: {r.status_code} (Latency: {lat:.1f}ms)")
-                print(f"Target response size: {len(r.content)} bytes.\n")
+                print(f"Target response size: {len(r.content)} bytes.")
+
+                if listener and listener.transactions:
+                    tx_file = DATA_DIR / f"burp_traffic_{program}.json"
+                    xml_file = DATA_DIR / f"burp_traffic_{program}.xml"
+                    listener.export_to_json(tx_file)
+                    listener.export_to_burp_xml(xml_file)
+                    print(f"\n✓ Recorded {len(listener.transactions)} HTTP transaction(s) to:")
+                    print(f"  • JSON: {tx_file}")
+                    print(f"  • XML:  {xml_file}")
+
+                    from bb.engines.base import ExecutionContext
+                    ctx = ExecutionContext(program=program, target=probe_url)
+                    findings = burp.import_file(xml_file, ctx)
+                    if findings:
+                        store = Store(DATA_DIR / f"{program}.db")
+                        for f in findings:
+                            store.add_finding(f)
+                        print(f"✓ Ingested {len(findings)} proxy traffic candidate(s) into database: {DATA_DIR / f'{program}.db'}")
+
+                    tx = listener.transactions[0]
+                    print("\nCaptured Raw Request (Preview):")
+                    print("-" * 50)
+                    print(tx.raw_request[:500] + ("..." if len(tx.raw_request) > 500 else ""))
+                    print("-" * 50)
+                    print("Captured Raw Response (Preview):")
+                    print("-" * 50)
+                    print(tx.raw_response[:500] + ("..." if len(tx.raw_response) > 500 else ""))
+                    print("-" * 50 + "\n")
+
                 return 0
         except Exception as exc:
             print(f"✗ Proxy request failed: {exc}\n")
             return 1
+        finally:
+            if listener:
+                listener.stop()
 
     elif burp_act == "findings":
         program = getattr(args, "program", "default") or "default"
@@ -2412,6 +2466,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     burp_proxy = burp_sub.add_parser("proxy", help="test or verify Burp Suite HTTP proxy listener connectivity")
     burp_proxy.add_argument("--probe-url", default="http://127.0.0.1:8000/api/lab/catalog", help="URL to probe through proxy")
+    burp_proxy.add_argument("--capture", action="store_true", help="enable proxy listener session and capture traffic to disk")
+    burp_proxy.add_argument("--program", default="owasp-lab", help="program name for captured findings and traffic")
+    burp_proxy.add_argument("--token", help="optional Bearer authorization token for authenticated request")
     burp_proxy.set_defaults(func=cmd_engines)
 
     burp_findings = burp_sub.add_parser("findings", help="list normalized findings imported from Burp Suite")
