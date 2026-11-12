@@ -2149,11 +2149,39 @@ def _handle_burp_action(args, burp, burp_act: str) -> int:
 
 
 def cmd_lab(args) -> int:
-    """OWASP Security Practice Lab commands and benchmarks."""
-    action = getattr(args, "lab_action", None) or "benchmark"
+    """OWASP Security Practice Lab service management and benchmark commands."""
+    from bb.lab_service import OwaspLabServiceManager
+    action = getattr(args, "lab_action", None) or "status"
+
+    if action == "status":
+        st = OwaspLabServiceManager.status()
+        print("\n=== OWASP LAB SERVICE STATUS ===")
+        print(f"State:        {st['state']}")
+        print(f"Port 8000:    {'IN USE' if st['port_open'] else 'FREE'}")
+        print(f"OWASP Lab:    {'ACTIVE & SERVING' if st['is_owasp_lab'] else 'NOT DETECTED'}")
+        if st.get("recorded_pid"):
+            print(f"Recorded PID: {st['recorded_pid']} ({'ALIVE' if st['process_alive'] else 'STALE'})")
+        if st["catalog_scenarios"]:
+            print(f"Catalog:      {st['catalog_scenarios']} ground-truth scenario pairs loaded")
+        print(f"Endpoint:     {st['health_url']}\n")
+        return 0
+
+    if action == "start":
+        res = OwaspLabServiceManager.start()
+        print(f"\n[{res['action']}] {res['message']}")
+        st = res["status"]
+        print(f"State: {st['state']} | Health URL: {st['health_url']}\n")
+        return 0 if res["success"] else 1
+
+    if action == "stop":
+        res = OwaspLabServiceManager.stop()
+        print(f"\n{res['message']}")
+        return 0 if res["success"] else 1
+
     if action == "benchmark":
         from bb.benchmark.owasp_bench import run_lab_benchmark
         return run_lab_benchmark(args)
+
     print(f"Unknown lab action: {action}")
     return 1
 
@@ -2692,9 +2720,19 @@ def build_parser() -> argparse.ArgumentParser:
     burp_findings.add_argument("--program", help="filter findings by program")
     burp_findings.set_defaults(func=cmd_engines)
 
-    # OWASP Lab Benchmark Command
-    lb = sub.add_parser("lab", help="OWASP Security Practice Lab commands and benchmarks")
+    # OWASP Lab Service Management & Benchmark Command
+    lb = sub.add_parser("lab", help="OWASP Security Practice Lab service management and benchmarks")
     lb_sub = lb.add_subparsers(dest="lab_action")
+
+    lb_status = lb_sub.add_parser("status", help="check status of OWASP Lab server on port 8000")
+    lb_status.set_defaults(func=cmd_lab)
+
+    lb_start = lb_sub.add_parser("start", help="start OWASP Lab server (reuses existing if already running)")
+    lb_start.set_defaults(func=cmd_lab)
+
+    lb_stop = lb_sub.add_parser("stop", help="stop OWASP Lab background server")
+    lb_stop.set_defaults(func=cmd_lab)
+
     lb_bench = lb_sub.add_parser("benchmark", help="run benchmark evaluation against local OWASP training lab")
     lb_bench.set_defaults(func=cmd_lab)
 
