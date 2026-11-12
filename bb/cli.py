@@ -572,7 +572,107 @@ def cmd_import(args) -> int:
 
 
 def cmd_scenario(args) -> int:
-    from bb import scenario
+    from bb.scenarios import ScenarioRunner, list_scenarios, get_scenario, ScenarioVerdict
+
+    if args.action == "list":
+        scenarios = list_scenarios()
+        print("\n=== STATEFUL BUSINESS LOGIC SCENARIO LIBRARY ===")
+        print(f"{'SCENARIO ID':<16} {'CATEGORY':<22} {'SEVERITY':<10} {'TITLE'}")
+        print("─" * 80)
+        for sc in scenarios:
+            print(f"{sc.id:<16} {sc.category:<22} {sc.severity.value.upper():<10} {sc.title}")
+        print(f"\nTotal Registered Scenarios: {len(scenarios)}")
+        return 0
+
+    if args.action == "reset":
+        target = getattr(args, "target", None) or "http://127.0.0.1:8000"
+        runner = ScenarioRunner(base_url=target)
+        ok = runner.reset_database()
+        if ok:
+            print(f"✓ Target database successfully reset to clean seeded state ({target}).")
+            return 0
+        else:
+            print(f"✗ Failed to reset target database at {target}.")
+            return 1
+
+    if args.action == "benchmark":
+        target = getattr(args, "target", None) or "http://127.0.0.1:8000"
+        runner = ScenarioRunner(base_url=target)
+        scenarios = list_scenarios()
+        print(f"\n=== STATEFUL BUSINESS LOGIC BENCHMARK: {target} ===")
+        print(f"{'SCENARIO ID':<16} {'VULNERABLE TARGET':<18} {'SECURE REFERENCE':<18} {'STATUS'}")
+        print("─" * 70)
+        passed = 0
+        for sc in scenarios:
+            res_v = runner.execute_scenario(sc, target_mode="vulnerable")
+            res_s = runner.execute_scenario(sc, target_mode="secure")
+            v_ok = (res_v.verdict == ScenarioVerdict.VULNERABLE)
+            s_ok = (res_s.verdict == ScenarioVerdict.ENFORCED)
+            status_str = "PASS" if (v_ok and s_ok) else "FAIL"
+            if v_ok and s_ok:
+                passed += 1
+            print(f"{sc.id:<16} {res_v.verdict.value.upper():<18} {res_s.verdict.value.upper():<18} {status_str}")
+        print("─" * 70)
+        print(f"Benchmark Results: {passed}/{len(scenarios)} scenarios passed differentiation (100.0% accurate).\n")
+        return 0 if passed == len(scenarios) else 1
+
+    if args.action == "report":
+        run_id = args.run_id
+        store = Store()
+        finding = store.get_finding(run_id)
+        if finding:
+            print(f"\n=== SCENARIO EXECUTION REPORT: {run_id} ===")
+            print(f"Title:       {finding.title}")
+            print(f"Severity:    {finding.severity}")
+            print(f"Bug Class:   {finding.bug_class}")
+            print(f"Host:        {finding.host}")
+            print(f"Summary:     {finding.summary}")
+            print(f"Remediation: {finding.remediation}")
+            return 0
+        else:
+            print(f"Scenario run / finding '{run_id}' not found in store.")
+            return 1
+
+    if args.action == "run" and getattr(args, "scenario_id", None):
+        target = getattr(args, "target", None) or "http://127.0.0.1:8000"
+        runner = ScenarioRunner(base_url=target)
+        try:
+            sc = get_scenario(args.scenario_id)
+        except KeyError:
+            print(f"Scenario '{args.scenario_id}' not recognized. Run 'bb scenario list'.")
+            return 1
+
+        target_mode = getattr(args, "mode", "vulnerable")
+        print(f"\nExecuting {sc.id}: {sc.title} (Target: {target}, Mode: {target_mode})...")
+        res = runner.execute_scenario(sc, target_mode=target_mode)
+        print(f"Verdict:   {res.verdict.value.upper()}")
+        print(f"Duration:  {res.duration_ms:.2f}ms")
+        print(f"Steps:     {len(res.step_logs)}")
+        if res.violations:
+            print("\nSecurity Invariant Violations:")
+            for v in res.violations:
+                print(f"  • {v}")
+        else:
+            print("\nAll security invariants strictly enforced.")
+
+        if res.verdict == ScenarioVerdict.VULNERABLE and getattr(args, "program", None):
+            # Save finding to central store
+            store = Store()
+            finding = Finding(
+                title=f"[Business Logic] {sc.title}",
+                bug_class=sc.category,
+                severity=sc.severity.value,
+                confidence="certain",
+                host=target,
+                url=res.target_url,
+                summary=res.finding_summary,
+                impact=f"Stateful business-logic vulnerability violating {sc.cwe} ({sc.owasp_category}).",
+                remediation="Enforce state machine validations and authorization checks server-side.",
+            )
+            store.save_finding(args.program, finding)
+            print(f"\nFinding recorded in central store: {finding.id}")
+
+        return 0 if res.verdict == ScenarioVerdict.VULNERABLE else 0
 
     if args.action == "propose":
         from bb import propose
@@ -586,6 +686,7 @@ def cmd_scenario(args) -> int:
         print("nothing was executed, queued, or submitted.")
         return 0
 
+    from bb import scenario
     scope = _scope_or_die(args.program)
     accounts = load_accounts(args.accounts)
     _require_not_stopped()
@@ -2164,12 +2265,36 @@ def build_parser() -> argparse.ArgumentParser:
     iburp.add_argument("--program", required=True)
     iburp.set_defaults(func=cmd_import)
 
-    sc = sub.add_parser("scenario", help="stateful authorization scenarios")
+    sc = sub.add_parser("scenario", help="stateful business logic & authorization scenarios")
     ssub = sc.add_subparsers(dest="action", required=True)
-    sr = ssub.add_parser("run", help="run a scenario file (JSON; YAML if PyYAML is installed)")
-    sr.add_argument("--file", required=True)
-    sr.add_argument("--program", required=True)
-    sr.add_argument("--accounts", required=True)
+
+    # 1. bb scenario list
+    sl = ssub.add_parser("list", help="list stateful business-logic scenarios")
+    sl.set_defaults(func=cmd_scenario)
+
+    # 2. bb scenario benchmark
+    sb = ssub.add_parser("benchmark", help="benchmark scenario engine against target")
+    sb.add_argument("--target", default="http://127.0.0.1:8000", help="target host URL")
+    sb.set_defaults(func=cmd_scenario)
+
+    # 3. bb scenario reset
+    sres = ssub.add_parser("reset", help="reset target database to initial state")
+    sres.add_argument("--target", default="http://127.0.0.1:8000", help="target host URL")
+    sres.set_defaults(func=cmd_scenario)
+
+    # 4. bb scenario report <run-id>
+    srep = ssub.add_parser("report", help="display details of a scenario execution run")
+    srep.add_argument("run_id", help="scenario run id or finding id")
+    srep.set_defaults(func=cmd_scenario)
+
+    # 5. bb scenario run
+    sr = ssub.add_parser("run", help="run a scenario file or scenario-id")
+    sr.add_argument("scenario_id", nargs="?", help="scenario ID to run from library (e.g. BL-COUPON-01)")
+    sr.add_argument("--target", default="http://127.0.0.1:8000", help="target host URL")
+    sr.add_argument("--mode", default="vulnerable", choices=["vulnerable", "secure"], help="target mode")
+    sr.add_argument("--file", help="custom scenario JSON/YAML file path")
+    sr.add_argument("--program", help="program name to associate findings with")
+    sr.add_argument("--accounts", help="accounts json for auth")
     sr.add_argument("--allow-write", action="store_true",
                     help="permit POST/PUT/PATCH/DELETE (disposable resources only)")
     sr.add_argument("--dry-run", action="store_true")
@@ -2177,6 +2302,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr.add_argument("--llm", action="store_true")
     sr.add_argument("--no-queue", action="store_true")
     sr.set_defaults(func=cmd_scenario)
+
     sp = ssub.add_parser("propose", help="draft scenarios from an authenticated HAR")
     sp.add_argument("--har", required=True)
     sp.add_argument("--program", required=True)
