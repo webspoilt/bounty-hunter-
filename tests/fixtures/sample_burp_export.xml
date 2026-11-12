@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE issues SYSTEM "https://portswigger.net">
+<issues burpVersion="2026.9.3" exportTime="Thu Nov 12 17:25:00 IST 2026">
+  <issue>
+    <serialNumber>1001</serialNumber>
+    <type>1048832</type>
+    <name>SQL injection</name>
+    <host ip="127.0.0.1">http://127.0.0.1:8000</host>
+    <path>/api/vulnerable/products/search</path>
+    <location>/api/vulnerable/products/search [q parameter]</location>
+    <severity>High</severity>
+    <confidence>Certain</confidence>
+    <issueBackground>SQL injection occurs when untrusted user input is directly concatenated into a dynamic SQL query.</issueBackground>
+    <remediationBackground>Use parameterized prepared statements or an ORM to bind parameters safely.</remediationBackground>
+    <remediationDetail>Ensure the product search endpoint uses parameterized SQL queries.</remediationDetail>
+    <issueDetail>The parameter 'q' was determined to be vulnerable to UNION-based SQL injection.</issueDetail>
+    <requestresponse>
+      <request base64="true">R0VUIC9hcGkvdnVsbmVyYWJsZS9wcm9kdWN0cy9zZWFyY2g/cT0nK1VOSU9OK1NFTEVDVCsxLDIsMyw0LDUtLSBIVFRQLzEuMQ0KSG9zdDogMTI3LjAuMC4xOjgwMDANCkFjY2VwdDogKi8qDQoNCg==</request>
+      <response base64="true">SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NCkNvbnRlbnQtTGVuZ3RoOiA1Mg0KDQp7InJlc3VsdHMiOiBbeyJpZCI6IDEsICJuYW1lIjogIjIiLCAicHJpY2UiOiA1LjB9XX0=</response>
+    </requestresponse>
+  </issue>
+  <issue>
+    <serialNumber>1002</serialNumber>
+    <type>2097408</type>
+    <name>Cross-site scripting (reflected)</name>
+    <host ip="127.0.0.1">http://127.0.0.1:8000</host>
+    <path>/api/vulnerable/echo</path>
+    <location>/api/vulnerable/echo [message parameter]</location>
+    <severity>Medium</severity>
+    <confidence>Firm</confidence>
+    <issueBackground>Reflected cross-site scripting occurs when user input is echoed directly into an HTML response without proper sanitization.</issueBackground>
+    <remediationBackground>Encode all user-supplied data before rendering it into the HTML document context.</remediationBackground>
+    <remediationDetail>Sanitize the message parameter using contextual output encoding.</remediationDetail>
+    <issueDetail>The parameter 'message' was reflected unescaped in the server response.</issueDetail>
+    <requestresponse>
+      <request base64="true">R0VUIC9hcGkvdnVsbmVyYWJsZS9lY2hvP21lc3NhZ2U9PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0PiBIVFRQLzEuMQ0KSG9zdDogMTI3LjAuMC4xOjgwMDANCg0K</request>
+      <response base64="true">SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvaHRtbA0KDQo8aDE+RWNobzogPHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0PjwvaDE+</response>
+    </requestresponse>
+  </issue>
+  <issue>
+    <serialNumber>1003</serialNumber>
+    <type>4194560</type>
+    <name>CORS misconfiguration</name>
+    <host ip="127.0.0.1">http://127.0.0.1:8000</host>
+    <path>/api/vulnerable/cors/user-info</path>
+    <location>/api/vulnerable/cors/user-info</location>
+    <severity>Medium</severity>
+    <confidence>Certain</confidence>
+    <issueBackground>The server reflects arbitrary Origin headers with Access-Control-Allow-Credentials: true.</issueBackground>
+    <remediationBackground>Only allow trusted origin domains in CORS configurations.</remediationBackground>
+    <remediationDetail>Remove wildcard or unvalidated Origin reflection.</remediationDetail>
+    <issueDetail>The application returned Access-Control-Allow-Origin: https://attacker.example.com with credentials allowed.</issueDetail>
+    <requestresponse>
+      <request base64="true">R0VUIC9hcGkvdnVsbmVyYWJsZS9jb3JzL3VzZXItaW5mbyBIVFRQLzEuMQ0KSG9zdDogMTI3LjAuMC4xOjgwMDANCk9yaWdpbjogaHR0cHM6Ly9hdHRhY2tlci5leGFtcGxlLmNvbQ0KDQo=</request>
+      <response base64="true">SFRUUC8xLjEgMjAwIE9LDQpBY2Nlc3MtQ29udHJvbC1BbGxvdy1PcmlnaW46IGh0dHBzOi8vYXR0YWNrZXIuZXhhbXBsZS5jb20NCkFjY2Vzcy1Db250cm9sLUFsbG93LUNyZWRlbnRpYWxzOiB0cnVlDQoNCnsidXNlciI6ICJhbGljZSJ9</response>
+    </requestresponse>
+  </issue>
+</issues>

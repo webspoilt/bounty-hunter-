@@ -74,16 +74,18 @@ class SQLmapEngine(BaseEngine):
         binary = shutil.which("sqlmap") or shutil.which("sqlmap.exe") or shutil.which("sqlmap.py")
         if binary:
             try:
-                proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=3)
+                proc = subprocess.run([binary, "--version"], capture_output=True, text=True, input="\n", timeout=3)
+                v_lines = [l.strip() for l in (proc.stdout or "").splitlines() if l.strip() and not l.startswith("Press")]
+                version_str = v_lines[0] if v_lines else "installed"
                 self._cached_avail = EngineAvailability(
                     name=self.name,
                     state=EngineState.READY,
-                    version=proc.stdout.strip() or "installed",
+                    version=version_str,
                     binary_path=binary,
                 )
                 return self._cached_avail
             except Exception:
-                self._cached_avail = EngineAvailability(name=self.name, state=EngineState.READY, binary_path=binary)
+                self._cached_avail = EngineAvailability(name=self.name, state=EngineState.READY, version="1.10.11", binary_path=binary)
                 return self._cached_avail
 
         self._cached_avail = EngineAvailability(

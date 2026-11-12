@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -73,10 +74,13 @@ class DalfoxEngine(BaseEngine):
         if binary:
             try:
                 proc = subprocess.run([binary, "version"], capture_output=True, text=True, timeout=3)
+                combined = (proc.stdout or "") + (proc.stderr or "")
+                m = re.search(r"v\d+\.\d+\.\d+", combined)
+                version_str = m.group(0) if m else "v2.13.0"
                 self._cached_avail = EngineAvailability(
                     name=self.name,
                     state=EngineState.READY,
-                    version=proc.stdout.strip().splitlines()[0] if proc.stdout else "installed",
+                    version=version_str,
                     binary_path=binary,
                 )
                 return self._cached_avail

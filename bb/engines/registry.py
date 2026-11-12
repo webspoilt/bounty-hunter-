@@ -9,6 +9,7 @@ from typing import Any
 
 from bb.engines.base import BaseEngine, EngineAvailability, EngineCategory
 from bb.engines.bountybot_authz import BountybotAuthzEngine
+from bb.engines.burpsuite import BurpSuiteEngine
 from bb.engines.dalfox import DalfoxEngine
 from bb.engines.doctor import DependencyDoctor, DiagnosticItem
 from bb.engines.nuclei import NucleiEngine
@@ -43,6 +44,7 @@ class EngineRegistry:
             DalfoxEngine(),
             SemgrepEngine(),
             BountybotAuthzEngine(),
+            BurpSuiteEngine(),
         ]
         for engine in defaults:
             self.register(engine)

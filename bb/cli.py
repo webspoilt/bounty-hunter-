@@ -1743,10 +1743,162 @@ def cmd_engines(args) -> int:
             print(f"\nSetup & Installation Guide:\n  {avail.remediation_hint}")
         print()
         return 0
+    elif action == "burp":
+        burp_act = getattr(args, "burp_action", None) or "status"
+        burp = reg.get("burpsuite")
+        if not burp:
+            print("Burp Suite engine not registered.")
+            return 1
+        return _handle_burp_action(args, burp, burp_act)
     elif action == "benchmark":
         from bb.benchmark.owasp_bench import run_lab_benchmark
         return run_lab_benchmark(args)
     print(f"Unknown engine action: {action}")
+    return 1
+
+
+def _handle_burp_action(args, burp, burp_act: str) -> int:
+    from bb.config import DATA_DIR
+    from bb.store import Store
+
+    if burp_act == "status":
+        avail = burp.check_availability()
+        print("\n" + "=" * 80)
+        print("          BURP SUITE INTEGRATION STATUS")
+        print("=" * 80)
+        print(f"Engine State:        {avail.state.value}")
+        print(f"Edition & Version:   {avail.version}")
+        print(f"Binary Path:         {avail.binary_path or 'Not located'}")
+        proxy_listening = avail.meta.get("proxy_listening", False)
+        proxy_status_str = f"ACTIVE ({avail.meta.get('proxy_host')}:{avail.meta.get('proxy_port')})" if proxy_listening else f"STOPPED ({avail.meta.get('proxy_host')}:{avail.meta.get('proxy_port')})"
+        print(f"Proxy Listener:      {proxy_status_str}")
+        print(f"Active Scanner:      {'AVAILABLE (Professional)' if avail.meta.get('active_scanner_available') else 'UNAVAILABLE (Community Edition)'}")
+        print(f"REST API:            {'AVAILABLE' if avail.meta.get('rest_api_available') else 'NOT CONFIGURED / PRO-ONLY'}")
+        if avail.issues:
+            print("\nDiagnostic Notes:")
+            for iss in avail.issues:
+                print(f"  • {iss}")
+        if avail.remediation_hint:
+            print(f"\nOperational Guidance:\n  {avail.remediation_hint}")
+        print("=" * 80 + "\n")
+        return 0
+
+    elif burp_act == "configure":
+        cfg_file = DATA_DIR / "burp_config.json"
+        config = {}
+        if cfg_file.exists():
+            try:
+                config = json.loads(cfg_file.read_text(encoding="utf-8"))
+            except Exception:
+                config = {}
+        if getattr(args, "host", None):
+            config["proxy_host"] = args.host
+        if getattr(args, "port", None):
+            config["proxy_port"] = args.port
+        if getattr(args, "api_url", None):
+            config["api_url"] = args.api_url
+        if getattr(args, "api_key", None):
+            config["api_key"] = args.api_key
+
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        burp.configure(config)
+        print(f"\n✓ Burp Suite configuration saved to: {cfg_file}")
+        print(json.dumps(config, indent=2) + "\n")
+        return 0
+
+    elif burp_act == "import":
+        file_arg = getattr(args, "file", None)
+        if not file_arg:
+            print("[ERROR] Please provide a path to a Burp XML, HAR, or JSON export file.")
+            print("Usage: bb engines burp import <file> [--program <prog>]")
+            return 1
+        p = Path(file_arg)
+        if not p.exists():
+            print(f"[ERROR] Import file not found: {p}")
+            return 1
+
+        program = getattr(args, "program", "default") or "default"
+        print(f"\n[BURP IMPORT] Ingesting {p} into program '{program}'...")
+        from bb.engines.base import ExecutionContext
+        ctx = ExecutionContext(program=program, target="")
+        findings = burp.import_file(p, ctx)
+        transactions = burp.import_traffic_items(p)
+
+        store = Store(DATA_DIR / f"{program}.db")
+        added_count = 0
+        for f in findings:
+            store.add_finding(f)
+            added_count += 1
+
+        print(f"✓ Ingested {added_count} findings into Bounty Hunter central store.")
+        if transactions:
+            traffic_file = DATA_DIR / f"burp_traffic_{program}.json"
+            tx_data = [t.__dict__ for t in transactions]
+            traffic_file.write_text(json.dumps(tx_data, indent=2), encoding="utf-8")
+            print(f"✓ Captured and recorded {len(transactions)} HTTP transactions to: {traffic_file}")
+
+        if findings:
+            print("\nImported Findings Summary:")
+            for f in findings[:10]:
+                print(f"  • [{f.severity.upper():<6}] {f.title:<55} ({f.bug_class})")
+            if len(findings) > 10:
+                print(f"  ... and {len(findings) - 10} more findings.")
+        print()
+        return 0
+
+    elif burp_act == "proxy":
+        avail = burp.check_availability()
+        host = avail.meta.get("proxy_host", "127.0.0.1")
+        port = avail.meta.get("proxy_port", 8080)
+        probe_url = getattr(args, "probe_url", "http://127.0.0.1:8000/api/lab/catalog")
+        print(f"\n[BURP PROXY CHECK] Testing proxy listener at {host}:{port}...")
+
+        is_listening = burp._probe_proxy_listener(host, port)
+        if not is_listening:
+            print(f"✗ Burp proxy listener is NOT accepting connections at {host}:{port}.")
+            print("Please ensure Burp Suite is running and the listener is active:")
+            print("  1. In Burp Suite, navigate to: Settings -> Network -> Connections / Proxy")
+            print(f"  2. Verify a Proxy Listener is set to Running on: {host}:{port}")
+            print("  3. For Community Edition, start Burp Suite manually before routing traffic.\n")
+            return 1
+
+        print(f"✓ Proxy listener is actively listening at {host}:{port}.")
+        print(f"Sending scoped probe request through proxy to {probe_url}...")
+        try:
+            proxy_url = f"http://{host}:{port}"
+            with httpx.Client(proxies=proxy_url, timeout=5.0, verify=False) as client:
+                t0 = time.time()
+                r = client.get(probe_url)
+                lat = (time.time() - t0) * 1000.0
+                print(f"✓ Proxy forward successful! HTTP Status: {r.status_code} (Latency: {lat:.1f}ms)")
+                print(f"Target response size: {len(r.content)} bytes.\n")
+                return 0
+        except Exception as exc:
+            print(f"✗ Proxy request failed: {exc}\n")
+            return 1
+
+    elif burp_act == "findings":
+        program = getattr(args, "program", "default") or "default"
+        store = Store(DATA_DIR / f"{program}.db")
+        all_findings = store.findings()
+        burp_findings = [f for f in all_findings if f.meta.get("discovery_engine") == "burpsuite" or "[Burp" in f.title]
+
+        print(f"\n=== BURP SUITE FINDINGS (Program: {program}) ===")
+        if not burp_findings:
+            print("No Burp Suite findings found in database.")
+            print(f"Import Burp issues with: bb engines burp import <file> --program {program}\n")
+            return 0
+
+        print(f"{'ID':<14} {'SEVERITY':<10} {'BUG CLASS':<20} {'TITLE':<45} {'STATUS'}")
+        print("─" * 105)
+        for f in burp_findings:
+            print(f"{f.id:<14} {f.severity.upper():<10} {f.bug_class:<20} {f.title[:44]:<45} {f.status}")
+        print("─" * 105)
+        print(f"Total Burp Findings: {len(burp_findings)}\n")
+        return 0
+
+    print(f"Unknown Burp action: {burp_act}")
     return 1
 
 
@@ -2238,6 +2390,33 @@ def build_parser() -> argparse.ArgumentParser:
 
     eng_bench = eng_sub.add_parser("benchmark", help="run multi-engine benchmark comparison")
     eng_bench.set_defaults(func=cmd_engines)
+
+    # Burp Suite Engine Integration Commands
+    eng_burp = eng_sub.add_parser("burp", help="PortSwigger Burp Suite Community & Professional integration")
+    burp_sub = eng_burp.add_subparsers(dest="burp_action")
+
+    burp_status = burp_sub.add_parser("status", help="check Burp Suite executable, edition, version, and proxy status")
+    burp_status.set_defaults(func=cmd_engines)
+
+    burp_conf = burp_sub.add_parser("configure", help="configure Burp Suite proxy host, port, or REST API")
+    burp_conf.add_argument("--host", default="127.0.0.1", help="proxy host (default 127.0.0.1)")
+    burp_conf.add_argument("--port", type=int, default=8080, help="proxy port (default 8080)")
+    burp_conf.add_argument("--api-url", help="Burp Professional REST API URL")
+    burp_conf.add_argument("--api-key", help="Burp Professional REST API key")
+    burp_conf.set_defaults(func=cmd_engines)
+
+    burp_import = burp_sub.add_parser("import", help="import captured HTTP traffic or scanner issues from Burp XML/HAR/JSON export")
+    burp_import.add_argument("file", help="path to Burp XML, HAR, or JSON export file")
+    burp_import.add_argument("--program", default="default", help="associate findings with program name")
+    burp_import.set_defaults(func=cmd_engines)
+
+    burp_proxy = burp_sub.add_parser("proxy", help="test or verify Burp Suite HTTP proxy listener connectivity")
+    burp_proxy.add_argument("--probe-url", default="http://127.0.0.1:8000/api/lab/catalog", help="URL to probe through proxy")
+    burp_proxy.set_defaults(func=cmd_engines)
+
+    burp_findings = burp_sub.add_parser("findings", help="list normalized findings imported from Burp Suite")
+    burp_findings.add_argument("--program", help="filter findings by program")
+    burp_findings.set_defaults(func=cmd_engines)
 
     # OWASP Lab Benchmark Command
     lb = sub.add_parser("lab", help="OWASP Security Practice Lab commands and benchmarks")

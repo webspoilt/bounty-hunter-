@@ -50,6 +50,7 @@ class EngineAvailability:
     binary_path: str | None = None
     issues: list[str] = field(default_factory=list)
     remediation_hint: str = ""
+    meta: dict[str, Any] = field(default_factory=dict)
 
     @property
     def available(self) -> bool:
@@ -64,6 +65,7 @@ class EngineAvailability:
             "binary_path": self.binary_path,
             "issues": self.issues,
             "remediation_hint": self.remediation_hint,
+            "meta": self.meta,
         }
 
 
