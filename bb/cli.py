@@ -961,7 +961,8 @@ def cmd_h1(args) -> int:
             print(f"[!] Failed to fetch program details for '{handle}': {exc}")
             return 1
 
-        policy_text = (prog.get("data", {}).get("attributes") or {}).get("policy") or ""
+        prog_attrs = prog.get("attributes") or (prog.get("data", {}).get("attributes") or {})
+        policy_text = prog_attrs.get("policy") or ""
         policy_rec = PolicyParser.parse_policy(handle, policy_text)
         brief = BriefGenerator.generate_brief(prog, policy_rec, scopes, exclusions)
 
