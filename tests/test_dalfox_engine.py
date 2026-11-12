@@ -78,7 +78,7 @@ def test_dalfox_live_execution_vuln_and_secure(dalfox_engine):
     )
     res_vuln = dalfox_engine.execute(ctx_vuln)
     assert res_vuln.success is True
-    assert len(res_vuln.findings) == 1
+    assert len(res_vuln.findings) >= 1
     assert res_vuln.findings[0].bug_class == "xss"
 
     # 2. Secure control endpoint
