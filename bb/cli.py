@@ -2883,6 +2883,51 @@ def build_parser() -> argparse.ArgumentParser:
     pr_sel.add_argument("--notes", default="", help="reason/notes for selection")
     pr_sel.set_defaults(func=cmd_program)
 
+    # Startup Intelligence, Growth Signals & Obscura Integration (Phase 14)
+    from bb.startup_intel.cli import cmd_startup
+    start_p = sub.add_parser("startup", help="startup intelligence, hiring signals, growth & Obscura browser integration")
+    start_sub = start_p.add_subparsers(dest="startup_action", required=True)
+
+    st_disc = start_sub.add_parser("discover", help="discover startups from sources (e.g. Y Combinator)")
+    st_disc.add_argument("--source", default="yc", help="startup data source (yc, hn)")
+    st_disc.add_argument("--recent", action="store_true", default=True, help="filter for recent batches/launches")
+    st_disc.add_argument("--top", type=int, default=20, help="max startups to display")
+    st_disc.set_defaults(func=cmd_startup)
+
+    st_jobs = start_sub.add_parser("jobs", help="retrieve live job listings and hiring signals")
+    st_jobs.add_argument("--source", default="all", help="source (hn, wellfound, linkedin)")
+    st_jobs.add_argument("--category", default="engineering", help="job category (engineering, security)")
+    st_jobs.set_defaults(func=cmd_startup)
+
+    st_search = start_sub.add_parser("search", help="search startup database by text query")
+    st_search.add_argument("--query", required=True, help="search query (e.g. 'AI SaaS')")
+    st_search.set_defaults(func=cmd_startup)
+
+    st_hiring = start_sub.add_parser("hiring", help="filter engineering or security hiring signals")
+    st_hiring.add_argument("--roles", default="backend,platform,api", help="comma-separated roles")
+    st_hiring.add_argument("--recent", action="store_true", default=True)
+    st_hiring.set_defaults(func=cmd_startup)
+
+    st_map = start_sub.add_parser("bounty-map", help="cross-reference startups with HackerOne bounty programs")
+    st_map.set_defaults(func=cmd_startup)
+
+    st_rep = start_sub.add_parser("report", help="show comprehensive startup intelligence profile")
+    st_rep.add_argument("domain", help="company canonical domain or handle (e.g. gitlab.com)")
+    st_rep.set_defaults(func=cmd_startup)
+
+    st_rank = start_sub.add_parser("ranking", help="display ranked startup research opportunity shortlist")
+    st_rank.add_argument("--bounty-only", action="store_true", default=True, help="show only authorized paying programs")
+    st_rank.add_argument("--top", type=int, default=20, help="number of candidates")
+    st_rank.set_defaults(func=cmd_startup)
+
+    st_sat = start_sub.add_parser("saturation", help="evaluate research saturation for a company")
+    st_sat.add_argument("domain", help="company canonical domain or handle")
+    st_sat.set_defaults(func=cmd_startup)
+
+    st_exp = start_sub.add_parser("export", help="export startup intelligence database")
+    st_exp.add_argument("--output", default="data/startup_intelligence.csv", help="output file path")
+    st_exp.set_defaults(func=cmd_startup)
+
     return p
 
 
