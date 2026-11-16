@@ -18,6 +18,12 @@ from bb.engines.shannon import ShannonEngine
 from bb.engines.sqlmap import SQLmapEngine
 from bb.engines.zap import ZAPEngine
 from bb.engines.claude_bughunter import ClaudeBugHunterEngine
+from bb.engines.trivy import TrivyEngine
+from bb.engines.trufflehog import TruffleHogEngine
+from bb.engines.strix import StrixEngine
+from bb.engines.pyrit import PyRITEngine
+from bb.engines.skillspector import SkillSpectorEngine
+from bb.engines.source_audit import SourceAuditEngine
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +55,12 @@ class EngineRegistry:
             BountybotAuthzEngine(),
             BurpSuiteEngine(),
             ZAPEngine(),
+            TrivyEngine(),
+            TruffleHogEngine(),
+            StrixEngine(),
+            PyRITEngine(),
+            SkillSpectorEngine(),
+            SourceAuditEngine(),
         ]
         for engine in defaults:
             self.register(engine)

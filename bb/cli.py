@@ -1946,6 +1946,62 @@ def cmd_engines(args) -> int:
     elif action == "benchmark":
         from bb.benchmark.owasp_bench import run_lab_benchmark
         return run_lab_benchmark(args)
+    elif action == "recommend":
+        cat = getattr(args, "category", None) or "access-control"
+        cat_lower = cat.lower()
+        print(f"\n=== RECOMMENDED SECURITY ENGINES FOR [{cat.upper()}] ===")
+        if cat_lower in ["access-control", "authz", "idor", "bola", "bfla"]:
+            print("1. bountybot-authz : Dual-token differential replay for IDOR/BOLA (Active & Verified)")
+            print("2. strix           : Autonomous business logic & permission boundary tester")
+            print("3. semgrep         : SAST pattern matching for missing authorization gates")
+            print("4. source-audit    : Source-first principal/resource boundary analysis")
+            print("Historical Intel   : HexBrain /api/v1/get_testing_playbook?topic=access_control")
+        elif cat_lower in ["api-security", "api", "graphql"]:
+            print("1. nuclei          : API exposure, parameter discovery, and route templates")
+            print("2. bountybot-authz : BFLA and object-level permission verification")
+            print("3. strix           : Interactive API state fuzzing and authenticated operations")
+            print("4. source-audit    : GraphQL schema field-level authorization auditing")
+        elif cat_lower in ["ai-security", "ai", "llm", "rag"]:
+            print("1. pyrit           : Microsoft AI Red Teaming toolkit (Prompt Injection & RAG)")
+            print("2. skillspector    : NVIDIA AI agent skill & MCP toolchain security auditor")
+            print("3. strix           : Conversational AI and autonomous agent surface testing")
+        elif cat_lower in ["injection", "sqli", "xss"]:
+            print("1. sqlmap          : Specialized SQL injection detection and non-destructive PoC")
+            print("2. dalfox          : Specialized XSS parameter parser and DOM analyzer")
+            print("3. nuclei          : Non-destructive injection and misconfiguration templates")
+            print("4. semgrep         : Static analysis for unescaped queries and sinks")
+        elif cat_lower in ["supply-chain", "dependencies", "secrets"]:
+            print("1. trivy           : Vulnerable dependency (SCA), misconfiguration, and SBOM")
+            print("2. trufflehog      : High-confidence secret detection with zero third-party auth")
+            print("3. semgrep         : Hardcoded secret rulesets and dependency checks")
+        else:
+            print(f"General Purpose: nuclei, semgrep, bountybot-authz, strix")
+        print()
+        return 0
+    elif action == "info":
+        target_eng = getattr(args, "engine_name", None)
+        if not target_eng:
+            print("Specify engine name (e.g. bb engines info strix)")
+            return 1
+        eng = reg.get(target_eng)
+        if not eng:
+            print(f"Engine '{target_eng}' not found.")
+            return 1
+        avail = eng.check_availability()
+        print(f"\n=== ENGINE DETAILS: {eng.display_name.upper()} ===")
+        print(f"Name:         {eng.name}")
+        print(f"Category:     {eng.category.value}")
+        print(f"Version:      {avail.version}")
+        print(f"State:        {avail.state.value}")
+        print(f"License:      {eng.license}")
+        print(f"Repository:   {eng.official_repository}")
+        print(f"Capabilities: {', '.join(eng.get_capabilities())}")
+        if avail.binary_path:
+            print(f"Binary Path:  {avail.binary_path}")
+        if avail.issues:
+            print(f"Issues:       {', '.join(avail.issues)}")
+        print()
+        return 0
     print(f"Unknown engine action: {action}")
     return 1
 
@@ -2764,6 +2820,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     eng_bench = eng_sub.add_parser("benchmark", help="run multi-engine benchmark comparison")
     eng_bench.set_defaults(func=cmd_engines)
+
+    eng_rec = eng_sub.add_parser("recommend", help="recommend engines by vulnerability category")
+    eng_rec.add_argument("--category", default="access-control", help="category (e.g. access-control, api-security, ai-security, injection, supply-chain)")
+    eng_rec.set_defaults(func=cmd_engines)
+
+    eng_info = eng_sub.add_parser("info", help="display detailed metadata for a registered engine")
+    eng_info.add_argument("engine_name", help="name of the engine (e.g. strix, trivy, pyrit)")
+    eng_info.set_defaults(func=cmd_engines)
 
     # Burp Suite Engine Integration Commands
     eng_burp = eng_sub.add_parser("burp", help="PortSwigger Burp Suite Community & Professional integration")
