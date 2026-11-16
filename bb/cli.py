@@ -2509,8 +2509,58 @@ def build_parser() -> argparse.ArgumentParser:
     bp_export.add_argument("--out", help="destination XML path (default: bountybot_burp_export.xml)")
     bp_export.set_defaults(func=cmd_burp)
 
-    intel = sub.add_parser("intel", help="security intelligence engine (CVE, CWE, CAPEC, advisories, priors)")
+    intel = sub.add_parser("intel", help="security intelligence engine, HexBrain, knowledge base & RAG")
     intel_sub = intel.add_subparsers(dest="intel_action", required=True)
+
+    from bb.intel_cli import cmd_intel_v2
+    i_status = intel_sub.add_parser("status", help="show HexBrain & knowledge base status")
+    i_status.set_defaults(func=cmd_intel_v2)
+
+    i_test = intel_sub.add_parser("test-connection", help="test connection to HexBrain API")
+    i_test.set_defaults(func=cmd_intel_v2)
+
+    i_stats = intel_sub.add_parser("stats", help="show knowledge base statistics")
+    i_stats.set_defaults(func=cmd_intel_v2)
+
+    i_search = intel_sub.add_parser("search", help="search vulnerability knowledge base")
+    i_search.add_argument("query", nargs="?", default="", help="search text or keyword")
+    i_search.add_argument("--cwe", help="CWE identifier filter (e.g. CWE-89)")
+    i_search.add_argument("--tech", help="technology filter (e.g. python, php)")
+    i_search.add_argument("--program", help="program handle filter")
+    i_search.add_argument("--limit", type=int, default=5, help="max results")
+    i_search.set_defaults(func=cmd_intel_v2)
+
+    i_cooc = intel_sub.add_parser("cooccurrence", help="compute weakness co-occurrence for a CWE")
+    i_cooc.add_argument("cwe", help="observed CWE identifier (e.g. CWE-862)")
+    i_cooc.set_defaults(func=cmd_intel_v2)
+
+    i_sug = intel_sub.add_parser("suggest", help="generate risk hypotheses and assessment checklist")
+    i_sug.add_argument("cwe", help="observed CWE identifier")
+    i_sug.set_defaults(func=cmd_intel_v2)
+
+    i_sem = intel_sub.add_parser("semgrep", help="Semgrep intelligence rule operations")
+    i_sem_sub = i_sem.add_subparsers(dest="semgrep_action")
+    i_sem_gen = i_sem_sub.add_parser("generate", help="generate candidate Semgrep rule")
+    i_sem_gen.add_argument("--cwe", required=True, help="CWE identifier")
+    i_sem_gen.add_argument("--tech", default="python", help="target technology")
+    i_sem_gen.add_argument("--rule-id", help="optional rule ID")
+    i_sem_gen.set_defaults(func=cmd_intel_v2)
+
+    i_tri = intel_sub.add_parser("triage", help="evaluate finding against false-positive intelligence")
+    i_tri.add_argument("--cwe", help="CWE identifier")
+    i_tri.add_argument("--vuln-type", default="Generic Vulnerability", help="vulnerability type name")
+    i_tri.add_argument("--endpoint", default="/api/v1/test", help="target endpoint")
+    i_tri.add_argument("--evidence", default="", help="HTTP request/response evidence")
+    i_tri.add_argument("--finding-id", default="F-CLI-1", help="finding ID")
+    i_tri.set_defaults(func=cmd_intel_v2)
+
+    i_data = intel_sub.add_parser("dataset", help="dataset quality and export tools")
+    i_data_sub = i_data.add_subparsers(dest="dataset_action")
+    i_data_st = i_data_sub.add_parser("status", help="audit dataset quality and leakage")
+    i_data_st.set_defaults(func=cmd_intel_v2)
+    i_data_exp = i_data_sub.add_parser("export", help="export RAG corpus, training data, and provenance")
+    i_data_exp.add_argument("--output-dir", default="data/datasets", help="output directory")
+    i_data_exp.set_defaults(func=cmd_intel_v2)
 
     in_ingest = intel_sub.add_parser("ingest", help="ingest intelligence feed file")
     in_ingest.add_argument("--file", required=True, help="path to JSON intelligence feed")
