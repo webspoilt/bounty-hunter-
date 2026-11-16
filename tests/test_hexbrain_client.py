@@ -70,26 +70,16 @@ def test_hexbrain_search_normalization():
 
 @patch("urllib.request.urlopen")
 def test_hexbrain_client_test_connection_operational(mock_urlopen, tmp_path: Path):
-    mock_health = MagicMock()
-    mock_health.status = 200
-    mock_health.__enter__.return_value = mock_health
-    mock_health.read.return_value = json.dumps({"status": "ok"}).encode("utf-8")
-
-    mock_stats = MagicMock()
-    mock_stats.status = 200
-    mock_stats.__enter__.return_value = mock_stats
-    mock_stats.read.return_value = json.dumps({
-        "status": "ok",
-        "data": {
-            "reports_count": 15244,
-            "technique_passages": 1123,
-            "vulnerability_classes": 18,
-            "weaknesses_count": 215,
-            "programs_count": 428,
-        }
+    mock_classes = MagicMock()
+    mock_classes.status = 200
+    mock_classes.__enter__.return_value = mock_classes
+    mock_classes.read.return_value = json.dumps({
+        "total_reports": 15244,
+        "programs": 428,
+        "classes": [{"id": "XSS", "name": "Cross-site Scripting", "reports": 2587}],
     }).encode("utf-8")
 
-    mock_urlopen.side_effect = [mock_health, mock_stats]
+    mock_urlopen.return_value = mock_classes
 
     cache = HexBrainCache(db_path=tmp_path / "cache.db")
     client = HexBrainClient(api_key="test_key_123", cache=cache)
@@ -98,6 +88,7 @@ def test_hexbrain_client_test_connection_operational(mock_urlopen, tmp_path: Pat
     assert diag["connected"] is True
     assert diag["status"] == "OPERATIONAL"
     assert diag["dataset_stats"]["reports_count"] == 15244
+    assert diag["dataset_stats"]["programs_count"] == 428
 
 
 def test_hexbrain_client_unconfigured():
@@ -113,15 +104,16 @@ def test_hexbrain_client_search_reports(mock_urlopen, tmp_path: Path):
     mock_resp.status = 200
     mock_resp.__enter__.return_value = mock_resp
     mock_resp.read.return_value = json.dumps({
-        "data": [
+        "total": 1,
+        "reports": [
             {
-                "report_id": "H1-9999",
+                "id": 9999,
                 "title": "BOLA on user invoices",
-                "cwe_id": "CWE-639",
+                "weakness": "CWE-639",
+                "vuln_class": "Broken Access Control",
                 "severity": "high",
-                "bounty_amount": 1500.0,
-                "source": "hexbrain",
-                "source_url": "https://hackerone.com/reports/9999",
+                "bounty_usd": 1500.0,
+                "url": "https://hackerone.com/reports/9999",
             }
         ]
     }).encode("utf-8")
@@ -134,6 +126,7 @@ def test_hexbrain_client_search_reports(mock_urlopen, tmp_path: Path):
     assert len(reports) == 1
     assert reports[0].report_id == "H1-9999"
     assert reports[0].cwe_id == "CWE-639"
+    assert reports[0].bounty_amount == 1500.0
 
 
 def test_hexbrain_engine_facade():

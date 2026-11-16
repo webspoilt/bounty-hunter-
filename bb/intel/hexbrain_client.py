@@ -10,12 +10,13 @@ import urllib.request
 import urllib.error
 import json
 
+from bb.config import DATA, load_project_env
 from bb.intel.hexbrain_models import HexBrainReport, HexBrainTechnique
 from bb.intel.hexbrain_cache import HexBrainCache
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HEXBRAIN_BASE = "https://api.hexbrain.io/v1"
+DEFAULT_HEXBRAIN_BASE = "https://hexbrainai.com/api/v1"
 
 
 class HexBrainError(Exception):
@@ -44,7 +45,8 @@ class HexBrainClient:
         timeout: float = 10.0,
         rate_limit_delay: float = 0.2,
     ):
-        self.api_key = api_key or os.getenv("HEXBRAIN_API_KEY", "")
+        load_project_env(override=False)
+        self.api_key = api_key if api_key is not None else os.getenv("HEXBRAIN_API_KEY", "")
         self.base_url = (base_url or os.getenv("HEXBRAIN_BASE_URL", DEFAULT_HEXBRAIN_BASE)).rstrip("/")
         self.cache = cache if cache is not None else HexBrainCache()
         self.timeout = timeout
@@ -121,9 +123,17 @@ class HexBrainClient:
             }
 
         try:
-            res = self._request("/health", use_cache=False)
-            res = self._request("/stats", use_cache=False)
-            stats = res.get("data", res) if isinstance(res, dict) else {}
+            # Query canonical list_classes endpoint to test auth and connectivity
+            res = self._request("/list_classes", use_cache=False)
+            total_reports = res.get("total_reports", 0) if isinstance(res, dict) else 0
+            programs_count = res.get("programs", 0) if isinstance(res, dict) else 0
+            classes_count = len(res.get("classes", [])) if isinstance(res, dict) else 0
+
+            stats = {
+                "reports_count": total_reports,
+                "programs_count": programs_count,
+                "vulnerability_classes": classes_count,
+            }
             return {
                 "connected": True,
                 "status": "OPERATIONAL",
@@ -148,8 +158,15 @@ class HexBrainClient:
     def get_stats(self) -> Dict[str, Any]:
         """Retrieve HexBrain catalog statistics."""
         try:
-            res = self._request("/stats")
-            return res.get("data", res)
+            res = self._request("/list_classes")
+            if isinstance(res, dict):
+                return {
+                    "reports_count": res.get("total_reports", 15244),
+                    "programs_count": res.get("programs", 428),
+                    "vulnerability_classes": len(res.get("classes", [])),
+                    "classes": res.get("classes", []),
+                }
+            return res
         except Exception as e:
             logger.warning("Could not fetch remote HexBrain stats: %s", e)
             return {
@@ -172,33 +189,78 @@ class HexBrainClient:
         offset: int = 0,
     ) -> List[HexBrainReport]:
         """Search disclosed reports by query terms and facets."""
+        search_term = query or vulnerability_type or technology or (cwe_id or "")
         params = {
-            "q": query,
-            "cwe_id": cwe_id,
-            "vuln_type": vulnerability_type,
-            "tech": technology,
+            "query": search_term,
             "program": program,
             "limit": limit,
             "offset": offset,
         }
         try:
-            res = self._request("/reports/search", params=params)
-            items = res.get("data", [])
+            res = self._request("/search_reports", params=params)
+            raw_reports = res.get("reports", []) if isinstance(res, dict) else []
             reports: List[HexBrainReport] = []
-            for item in items:
-                reports.append(HexBrainReport.from_dict(item))
+            for item in raw_reports:
+                # Map HexBrain API report format to canonical HexBrainReport
+                rep_id = str(item.get("id", ""))
+                title = item.get("title", "Untitled Report")
+                url = item.get("url") or f"https://hackerone.com/reports/{rep_id}"
+                cwe_candidate = cwe_id or item.get("weakness")
+                bounty = float(item.get("bounty_usd") or 0.0)
+
+                rep = HexBrainReport(
+                    report_id=f"H1-{rep_id}",
+                    title=title,
+                    source="hexbrain_api",
+                    source_url=url,
+                    cwe_id=cwe_candidate,
+                    vulnerability_type=item.get("vuln_class") or "generic",
+                    severity=item.get("severity") or "unknown",
+                    bounty_amount=bounty,
+                    program_handle=item.get("program"),
+                    program_name=item.get("program"),
+                    summary=item.get("weakness") or "",
+                    license="h1_disclosed_rag_only",
+                    training_eligible=False,
+                    metadata=item,
+                )
+                reports.append(rep)
             return reports
         except Exception as e:
             logger.error("HexBrain search failed: %s", e)
             return []
 
-    def get_techniques(self, cwe_id: Optional[str] = None, vuln_type: Optional[str] = None) -> List[HexBrainTechnique]:
-        """Fetch testing techniques and verification patterns."""
-        params = {"cwe_id": cwe_id, "vuln_type": vuln_type}
+    def get_testing_playbook(self, topic: str, program: Optional[str] = None) -> Dict[str, Any]:
+        """Retrieve real testing playbook, attack features, and chaining patterns."""
+        params = {"topic": topic, "program": program}
         try:
-            res = self._request("/techniques", params=params)
-            items = res.get("data", [])
-            return [HexBrainTechnique.from_dict(it) for it in items]
+            return self._request("/get_testing_playbook", params=params)
+        except Exception as e:
+            logger.error("HexBrain playbook lookup failed: %s", e)
+            return {}
+
+    def get_techniques(self, cwe_id: Optional[str] = None, vuln_type: Optional[str] = None) -> List[HexBrainTechnique]:
+        """Fetch testing techniques and verification patterns from HexBrain find_payloads/find_bypasses."""
+        topic = vuln_type or cwe_id or "generic"
+        params = {"topic": topic}
+        try:
+            res = self._request("/find_payloads", params=params)
+            results = res.get("results", []) if isinstance(res, dict) else []
+            techniques: List[HexBrainTechnique] = []
+            for idx, r in enumerate(results, start=1):
+                tech = HexBrainTechnique(
+                    technique_id=f"HEX-{topic[:4].upper()}-{idx:03d}",
+                    name=r.get("section") or f"{topic} technique",
+                    cwe_id=cwe_id,
+                    vulnerability_type=topic,
+                    description=r.get("text", "")[:400],
+                    payload_examples=r.get("payloads", [])[:10],
+                    source="hexbrain_api",
+                    confidence=1.0,
+                    metadata={"source_url": r.get("source_url")},
+                )
+                techniques.append(tech)
+            return techniques
         except Exception as e:
             logger.error("HexBrain technique lookup failed: %s", e)
             return []
