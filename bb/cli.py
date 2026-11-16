@@ -2519,8 +2519,32 @@ def build_parser() -> argparse.ArgumentParser:
     i_test = intel_sub.add_parser("test-connection", help="test connection to HexBrain API")
     i_test.set_defaults(func=cmd_intel_v2)
 
+    i_cfg = intel_sub.add_parser("configure-hexbrain", help="securely configure HexBrain API key in .env")
+    i_cfg.set_defaults(func=cmd_intel_v2)
+
     i_stats = intel_sub.add_parser("stats", help="show knowledge base statistics")
     i_stats.set_defaults(func=cmd_intel_v2)
+
+    i_rep = intel_sub.add_parser("report", help="retrieve full disclosed report write-up by ID")
+    i_rep.add_argument("report_id", help="HackerOne report ID (e.g. 404874)")
+    i_rep.set_defaults(func=cmd_intel_v2)
+
+    i_prog = intel_sub.add_parser("program", help="retrieve historical program intelligence profile")
+    i_prog.add_argument("program", help="program name (e.g. GitLab, Mail.ru)")
+    i_prog.set_defaults(func=cmd_intel_v2)
+
+    i_pb = intel_sub.add_parser("playbook", help="retrieve HexBrain vulnerability testing playbook")
+    i_pb.add_argument("--topic", help="vulnerability topic (e.g. IDOR, SSRF, XSS)")
+    i_pb.add_argument("--cwe", help="CWE identifier")
+    i_pb.set_defaults(func=cmd_intel_v2)
+
+    i_cache = intel_sub.add_parser("cache", help="HexBrain API cache inspection and management")
+    i_cache.add_argument("cache_action", choices=["status", "clear"], nargs="?", default="status")
+    i_cache.set_defaults(func=cmd_intel_v2)
+
+    i_prov = intel_sub.add_parser("provenance", help="audit data provenance and licensing governance")
+    i_prov.add_argument("prov_action", choices=["status"], nargs="?", default="status")
+    i_prov.set_defaults(func=cmd_intel_v2)
 
     i_search = intel_sub.add_parser("search", help="search vulnerability knowledge base")
     i_search.add_argument("query", nargs="?", default="", help="search text or keyword")
@@ -2813,6 +2837,51 @@ def build_parser() -> argparse.ArgumentParser:
     ag_rep = ag_sub.add_parser("report", help="view autonomous agent execution logs and findings")
     ag_rep.add_argument("run_id", help="execution run ID or audit log ID")
     ag_rep.set_defaults(func=cmd_agents)
+
+    # HackerOne Program Discovery & Ranking Engine (Phase 12)
+    from bb.programs.program_cli import cmd_program
+    prog_p = sub.add_parser("program", help="HackerOne program discovery, intelligence & opportunity ranking")
+    prog_sub = prog_p.add_subparsers(dest="program_action", required=True)
+
+    pr_status = prog_sub.add_parser("status", help="show program discovery engine status")
+    pr_status.set_defaults(func=cmd_program)
+
+    pr_disc = prog_sub.add_parser("discover", help="discover and analyze HackerOne programs")
+    pr_disc.add_argument("--platform", default="hackerone", help="target platform (default hackerone)")
+    pr_disc.add_argument("--bounty-only", action="store_true", default=True, help="filter for monetary bounties")
+    pr_disc.add_argument("--prioritize-ai-built", action="store_true", default=False, help="prioritize AI-built/vibe-coded programs")
+    pr_disc.add_argument("--top", type=int, default=50, help="max programs to retrieve")
+    pr_disc.set_defaults(func=cmd_program)
+
+    pr_rank = prog_sub.add_parser("ranking", help="display ranked opportunity table")
+    pr_rank.add_argument("--platform", default="hackerone")
+    pr_rank.add_argument("--top", type=int, default=10, help="number of candidates to display")
+    pr_rank.set_defaults(func=cmd_program)
+
+    pr_short = prog_sub.add_parser("shortlist", help="display top eligible research shortlist")
+    pr_short.add_argument("--top", type=int, default=5, help="shortlist size")
+    pr_short.set_defaults(func=cmd_program)
+
+    pr_rev = prog_sub.add_parser("review", help="deep-dive review of a specific program")
+    pr_rev.add_argument("handle", help="program handle")
+    pr_rev.set_defaults(func=cmd_program)
+
+    pr_pol = prog_sub.add_parser("policy", help="inspect program policy text and fingerprint")
+    pr_pol.add_argument("handle", help="program handle")
+    pr_pol.set_defaults(func=cmd_program)
+
+    pr_score = prog_sub.add_parser("score", help="show 7-criterion 100-point opportunity score breakdown")
+    pr_score.add_argument("handle", help="program handle")
+    pr_score.set_defaults(func=cmd_program)
+
+    pr_ai = prog_sub.add_parser("ai-evidence", help="inspect AI-built development evidence")
+    pr_ai.add_argument("handle", help="program handle")
+    pr_ai.set_defaults(func=cmd_program)
+
+    pr_sel = prog_sub.add_parser("select", help="human researcher selection for research planning")
+    pr_sel.add_argument("handle", help="program handle")
+    pr_sel.add_argument("--notes", default="", help="reason/notes for selection")
+    pr_sel.set_defaults(func=cmd_program)
 
     return p
 

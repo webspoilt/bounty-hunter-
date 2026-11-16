@@ -239,6 +239,45 @@ class HexBrainClient:
             logger.error("HexBrain playbook lookup failed: %s", e)
             return {}
 
+    def get_program_history(self, program: str) -> Dict[str, Any]:
+        """Fetch historical program vulnerability profile and class breakdown."""
+        params = {"program": program}
+        try:
+            return self._request("/get_program_history", params=params)
+        except Exception as e:
+            logger.error("HexBrain program history lookup failed: %s", e)
+            return {}
+
+    def get_report(self, report_id: str) -> Optional[HexBrainReport]:
+        """Retrieve full write-up and reproduction steps for a specific disclosed report ID."""
+        clean_id = report_id.upper().replace("H1-", "").replace("#", "").strip()
+        params = {"id": clean_id}
+        try:
+            res = self._request("/get_report", params=params)
+            if not isinstance(res, dict) or "id" not in res:
+                return None
+            return HexBrainReport(
+                report_id=f"H1-{res.get('id')}",
+                title=res.get("title", ""),
+                source="hexbrain_api",
+                source_url=res.get("url") or f"https://hackerone.com/reports/{res.get('id')}",
+                cwe_id=res.get("weakness"),
+                vulnerability_type=res.get("vuln_class") or "generic",
+                severity=res.get("severity") or "unknown",
+                bounty_amount=float(res.get("bounty_usd") or 0.0),
+                program_handle=res.get("program"),
+                program_name=res.get("program"),
+                summary=res.get("summary") or res.get("weakness") or "",
+                vulnerability_details=res.get("writeup") or "",
+                reproduction_steps=res.get("writeup") or "",
+                license="h1_disclosed_rag_only",
+                training_eligible=False,
+                metadata=res,
+            )
+        except Exception as e:
+            logger.error("HexBrain report lookup failed: %s", e)
+            return None
+
     def get_techniques(self, cwe_id: Optional[str] = None, vuln_type: Optional[str] = None) -> List[HexBrainTechnique]:
         """Fetch testing techniques and verification patterns from HexBrain find_payloads/find_bypasses."""
         topic = vuln_type or cwe_id or "generic"

@@ -26,8 +26,9 @@ class HybridRetriever:
         program: Optional[str] = None,
         training_only: bool = False,
         limit: int = 10,
+        use_live_hexbrain: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Perform hybrid retrieval across vulnerability knowledge base."""
+        """Perform hybrid retrieval across vulnerability knowledge base and live HexBrain API."""
         sq = build_search_query(
             raw_query=query,
             cwe=cwe_id,
@@ -118,6 +119,30 @@ class HybridRetriever:
                 results.append({
                     "report": rep,
                     "score": rank,
+                    "source_provenance": "local_sqlite_kb",
                 })
+
+            # Live HexBrain integration: if live results enabled and we have budget, enrich
+            if use_live_hexbrain and len(results) < sq.limit:
+                try:
+                    from bb.intel.hexbrain_client import HexBrainClient
+                    client = HexBrainClient()
+                    if client.api_key:
+                        hex_reports = client.search_reports(
+                            query=sq.query,
+                            cwe_id=sq.cwe_id,
+                            program=sq.program,
+                            limit=sq.limit - len(results),
+                        )
+                        for h_rep in hex_reports:
+                            # Index into local KB for persistent caching and future FTS
+                            self.kb.store_report(h_rep)
+                            results.append({
+                                "report": h_rep,
+                                "score": 0.5,
+                                "source_provenance": "live_hexbrain_api",
+                            })
+                except Exception as e:
+                    logger.debug("Live HexBrain retrieval fallback skipped: %s", e)
 
             return results
