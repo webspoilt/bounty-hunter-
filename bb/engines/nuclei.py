@@ -57,6 +57,30 @@ class NucleiEngine(BaseEngine):
         return avail.version
 
     @property
+    def template_version(self) -> str:
+        cfg_path = Path.home() / "AppData" / "Roaming" / "nuclei" / ".templates-config.json"
+        if cfg_path.exists():
+            try:
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                return data.get("nuclei-templates-version") or data.get("nuclei-templates-latest-version") or "v10.5.2"
+            except Exception:
+                pass
+        return "v10.5.2"
+
+    @property
+    def templates_directory(self) -> Path:
+        cfg_path = Path.home() / "AppData" / "Roaming" / "nuclei" / ".templates-config.json"
+        if cfg_path.exists():
+            try:
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                p = data.get("nuclei-templates-directory")
+                if p and Path(p).exists():
+                    return Path(p)
+            except Exception:
+                pass
+        return Path.home() / "nuclei-templates"
+
+    @property
     def official_repository(self) -> str:
         return "https://github.com/projectdiscovery/nuclei"
 
@@ -148,6 +172,7 @@ class NucleiEngine(BaseEngine):
             "-u", context.target,
             "-rate-limit", str(int(context.rate_limit or self._rate_limit)),
             *template_arg,
+            "-etags", "dos,fuzz,intrusive",
             "-jsonl",
             "-output", str(output_file),
             "-silent",
@@ -257,6 +282,7 @@ class NucleiEngine(BaseEngine):
                         meta={
                             "discovery_engine": self.name,
                             "engine_version": self.version,
+                            "template_version": self.template_version,
                             "program": context.program,
                             "template_id": template_id,
                             "cve_id": info.get("classification", {}).get("cve-id", []),

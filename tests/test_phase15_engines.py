@@ -70,3 +70,28 @@ def test_skillspector_and_source_audit():
     sa = SourceAuditEngine()
     assert "boundary_audit" in sa.get_capabilities()
     assert "principal_separation" in sa.get_capabilities()
+
+
+def test_nuclei_engine_template_version_and_controls():
+    """Verify Nuclei engine template version v10.5.2, directory, and safe operational controls."""
+    from bb.engines.nuclei import NucleiEngine
+    ne = NucleiEngine()
+    assert ne.name == "nuclei"
+    assert ne.template_version == "v10.5.2"
+    assert ne.templates_directory.exists()
+    assert (ne.templates_directory / ".templates-config.json").exists()
+
+    # Dry run should verify that -etags dos,fuzz,intrusive and -rate-limit are present
+    ctx = ExecutionContext(
+        target="http://127.0.0.1:8000/docs",
+        program="local_lab",
+        rate_limit=3.0,
+        dry_run=True,
+    )
+    res = ne.execute(ctx)
+    assert res.success is True
+    assert "-etags dos,fuzz,intrusive" in res.stdout
+    assert "-rate-limit 3" in res.stdout
+    assert "-duc" in res.stdout
+    assert "-no-stdin" in res.stdout
+
