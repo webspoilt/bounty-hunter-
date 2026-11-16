@@ -1,101 +1,96 @@
-# BOUNTY HUNTER — FIRST TARGET RESEARCH PLAN: MONEYBIRD
+# BOUNTY HUNTER — TARGET RESEARCH PLAN & DIFFERENTIAL BOLA SPECIFICATION
 
-**Target:** Moneybird (`moneybird`)  
-**Target Scope:** `https://moneybird.com` & `https://moneybird.com/api/v2/`  
-**Classification:** Cloud Accounting & Multi-Tenant SaaS  
-**Primary Focus:** Broken Object Level Authorization (BOLA), Multi-Tenant Isolation, and Business Logic
-
----
-
-## 1. Research Objectives & Principles
-
-The mission is to discover a genuine, high-impact vulnerability (such as unauthorized cross-tenant data access or privilege escalation) within Moneybird's multi-tenant architecture while adhering strictly to HackerOne policies.
-
-### Core Principles:
-1. **Zero Customer Impact:** Research is conducted entirely between two research-owned test organizations.
-2. **Quality Over Quantity:** No noisy spray-and-pray scanners; only precise, differential logic probes.
-3. **Reproducible Proof:** Every testable hypothesis must be verified using reproducible dual-token replays.
+**Target Context:** Multi-Tenant Accounting SaaS Architecture  
+**Reference Target:** Moneybird (`moneybird.com`)  
+**Scope Asset:** `https://moneybird.com/api/v2/{administration_id}/`  
+**Qualification Status:** **`BLOCKED_NO_MONETARY_BOUNTY`** (Design retained as reference BOLA plan; paid target pivot pending)
 
 ---
 
-## 2. Attack Surface Breakdown
+## 1. Operational Scope & Safety Invariants
 
-Moneybird's core SaaS platform exposes a sophisticated REST API (`/api/v2/{administration_id}/...`) organized around administrative accounting domains:
+Before any active packet transmission on any target:
+1. **Mandatory Qualification Gate:** Target must possess verified monetary bounties (active `bounty_table` on HackerOne).
+2. **Zero Real Customer Impact:** All differential testing is strictly confined to two researcher-owned test organizations.
+3. **No Financial Modifications:** No mutating requests (POST/PATCH/DELETE) against banking feeds, VAT declarations, or ledger numbering.
+4. **Rate Limit:** Bound to $\le 2\text{ req/sec}$ (below the $3.0\text{ req/s}$ ceiling).
+5. **No Runaway Scanning:** Mass automated crawlers and destructive tools are prohibited.
+
+---
+
+## 2. Documented API Resource Architecture
+
+The core API architecture (`https://moneybird.com/api/v2/{administration_id}/`) requires explicit administration scoping:
 
 ```
-                          Moneybird API v2
+                      API Client (Bearer Token)
                                  |
-        +------------------------+------------------------+
-        |                        |                        |
-   Administrations           Sales & Invoicing       Documents & Storage
-   - Organization IDs       - Sales Invoices         - Receipt Uploads
-   - User Permissions       - Estimates              - Bank Statements
-   - Accountant Access      - Credit Notes           - Attachments
-        |                        |                        |
-        +------------------------+------------------------+
+                                 v
+                 https://moneybird.com/api/v2/
                                  |
-                         Webhooks & Integrations
-                         - Event Callbacks
-                         - OAuth Application Scopes
+           +---------------------+---------------------+
+           |                                           |
+Administration Alpha (ID: A)               Administration Beta (ID: B)
+- Invoices: /sales_invoices/IA             - Invoices: /sales_invoices/IB
+- Contacts: /contacts/CA                   - Contacts: /contacts/CB
+- Estimates: /estimates/EA                 - Estimates: /estimates/EB
 ```
 
 ---
 
-## 3. High-Priority Research Vectors & Hypotheses
+## 3. High-Priority Differential BOLA / IDOR Plan
 
-### Hypothesis 1: Cross-Administration Object IDOR (CWE-639)
-- **Vulnerability Concept:** In Moneybird API v2, endpoints are structured as `/api/v2/{administration_id}/sales_invoices/{invoice_id}.json`. If the authorization check validates that the user has access to `{administration_id}`, but fails to verify that `{invoice_id}` belongs to that specific administration, an attacker could access another company's invoice simply by swapping the `{invoice_id}` parameter.
-- **Testing Approach:**
-  - Create Invoice `INV-001` in Administration A (User A).
-  - Create Invoice `INV-002` in Administration B (User B).
-  - Use User B's auth token to query `/api/v2/{admin_b_id}/sales_invoices/{inv_a_id}.json`.
-  - Verify if Administration A invoice data is returned to User B.
+### 3.1 Organization & Entity Setup
+- **Organization Alpha (Resource Owner):**
+  - Administration ID: $\text{Admin}_\alpha$
+  - Authentication Token: $T_\alpha$
+  - Test Record: Synthetic Sales Invoice $\text{Inv}_\alpha$ (Total: €1.00, synthetic customer "Alpha Test Client").
+- **Organization Beta (Attacker / Probe):**
+  - Administration ID: $\text{Admin}_\beta$
+  - Authentication Token: $T_\beta$
+  - Test Record: Synthetic Sales Invoice $\text{Inv}_\beta$.
 
-### Hypothesis 2: Accountant Privilege Escalation & Role Boundary (CWE-285)
-- **Vulnerability Concept:** Moneybird allows inviting external accountants or users with limited roles (e.g., "Read Only" or "Bookkeeper without Bank Access"). If backend API mutations (e.g., modifying bank details, altering audit logs, or exporting tax returns) do not enforce role-level authorization middleware on sub-resources, restricted users may execute privileged operations.
-- **Testing Approach:**
-  - In Administration A, invite User B as a restricted role ("Read Only").
-  - Test mutations: POST/PATCH to `/api/v2/{admin_a_id}/bank_statements` or `/api/v2/{admin_a_id}/settings`.
-  - Validate whether the restricted token can perform state-changing operations.
+### 3.2 Differential Matrix & Expected Behavior
 
-### Hypothesis 3: Document Attachment Storage Isolation (CWE-639 / CWE-200)
-- **Vulnerability Concept:** Invoices and purchase receipts allow file attachments hosted via `moneybirdstorage.com`. If attachment storage URLs rely on predictable identifiers, sequential IDs, or lack signed short-lived tokens, attachments uploaded in Administration A might be readable by unauthenticated users or User B.
-- **Testing Approach:**
-  - Upload a test PDF attachment in Administration A.
-  - Capture the generated storage URL and download headers.
-  - Test access to the storage URL without cookies, and with User B's session.
+| Step | Test Objective | Request URL | Header | Expected Permitted (Baseline) | Expected Secure (Denied) | Vulnerability Condition (Verified IDOR) |
+| :---: | :--- | :--- | :---: | :---: | :---: | :--- |
+| **B1** | Alpha Baseline | `GET /api/v2/Admin_Alpha/sales_invoices/Inv_Alpha.json` | Bearer $T_\alpha$ | `200 OK` (Alpha Data) | N/A | Normal Owner Access |
+| **B2** | Beta Baseline | `GET /api/v2/Admin_Beta/sales_invoices/Inv_Beta.json` | Bearer $T_\beta$ | `200 OK` (Beta Data) | N/A | Normal Owner Access |
+| **T1** | Direct Admin Bypass | `GET /api/v2/Admin_Alpha/sales_invoices/Inv_Alpha.json` | Bearer $T_\beta$ | N/A | `403 Forbidden` / `404 Not Found` | `200 OK` (Direct Admin Route Leak) |
+| **T2** | Parameter Swap (BOLA) | `GET /api/v2/Admin_Beta/sales_invoices/Inv_Alpha.json` | Bearer $T_\beta$ | N/A | `404 Not Found` | `200 OK` (Unscoped Object Find Leak) |
+| **T3** | Contact Record BOLA | `GET /api/v2/Admin_Beta/contacts/Contact_Alpha.json` | Bearer $T_\beta$ | N/A | `404 Not Found` | `200 OK` (PII Leakage) |
+| **T4** | Unauthenticated Read | `GET /api/v2/Admin_Alpha/sales_invoices/Inv_Alpha.json` | None | N/A | `401 Unauthorized` | `200 OK` (Authentication Missing) |
 
-### Hypothesis 4: Webhook Event Delivery & Host Header Analysis (CWE-918 / SSRF)
-- **Vulnerability Concept:** Moneybird provides webhook integration (`/api/v2/{administration_id}/webhooks.json`) to notify external services of new invoices or payments. If webhook endpoints do not validate destination IP addresses or follow internal redirects, they may be susceptible to SSRF or internal network probing.
-- **Testing Approach:**
-  - Register test webhook URLs pointing to an external collaborator or test listener under researcher control.
-  - Verify DNS resolution, IPv4/IPv6 address filtering, and redirect handling behavior.
-
----
-
-## 4. Phase-by-Phase Research Schedule
-
-| Phase | Milestone | Execution Description | Status |
-| :---: | :--- | :--- | :---: |
-| **Phase 1** | **Target Onboarding & Auth Setup** | Register test tenant Alpha and test tenant Beta. Generate API tokens and record `administration_id` for both accounts. | Pending User Approval |
-| **Phase 2** | **Surface Exploration (Passive)** | Map REST endpoints using documented API specs and Obscura browser inspection on test tenant accounts. | Scheduled |
-| **Phase 3** | **Differential BOLA Testing** | Execute Bountybot-Authz differential replays across Administration A and B for all identified endpoints. | Scheduled |
-| **Phase 4** | **Independent Verification** | Run verification challenge against any discovered anomalies. Eliminate false positives. | Scheduled |
-| **Phase 5** | **HackerOne Report Generation** | Compile professional vulnerability report with complete reproduction steps, proof-of-concept, and remediation guidance. | Scheduled |
+### 3.3 Evidence Standards for `VERIFIED` Classification
+For a finding to be promoted from `HYPOTHESIS` to `VERIFIED`:
+1. Request T1 or T2 must return `HTTP 200 OK`.
+2. Response body must be parsed as valid JSON containing Alpha's private entity attributes (`"id": Inv_Alpha`, `"administration_id": Admin_Alpha`).
+3. Soft 404s, empty lists `[]`, or generic error objects (`{"error": "..."}`) are automatically downgraded to `DISPROVED`.
+4. A self-contained reproduction script using non-destructive `curl` commands must be generated and hashed.
 
 ---
 
-## 5. Strict Safe-Testing Protocol
+## 4. Engine Operational Readiness Correction
 
-```
-+--------------------------------------------------------------------------+
-|                        MANDATORY SAFETY PROTOCOL                         |
-|                                                                          |
-| 1. NEVER test against third-party or real customer accounts.             |
-| 2. Limit request frequency to <= 2 requests per second.                  |
-| 3. Set custom User-Agent: BountyHunter-Security-Research/2.0.            |
-| 4. Do not perform high-volume fuzzing or denial-of-service tests.        |
-| 5. If ANY sensitive data or unexpected access is discovered, STOP        |
-|    testing immediately and proceed to report preparation.                |
-+--------------------------------------------------------------------------+
-```
+To maintain complete technical truth, tool capabilities are classified according to their actual execution state:
+
+### 4.1 Host Operational Engines (Ready for Immediate Assessment)
+- **Bountybot-Authz (Dual-Token Replay):** `FULLY_OPERATIONAL`. Native Python module (`bb/engine/replay.py`). Tested and passed 100% on OWASP access control lab.
+- **Nuclei:** `FULLY_OPERATIONAL`. Engine v3.11.1 with **v10.5.2 official templates** (14,225 templates independently validated via `nuclei -tv`). Automated safe flags: `-etags dos,fuzz,intrusive -duc -no-stdin -rate-limit 3`.
+- **Semgrep SAST:** `FULLY_OPERATIONAL`. Host v1.163.0.
+- **Trivy SCA:** `FULLY_OPERATIONAL`. Host v0.76.2 with local vulnerability database.
+- **TruffleHog Secrets:** `FULLY_OPERATIONAL`. Host v3.99.9 (`--no-update --no-verification`).
+- **Obscura Headless:** `FULLY_OPERATIONAL`. Host v0.2.7 Chromium engine.
+
+### 4.2 Upstream-Constrained Adapters (Not Active on Host)
+- **Strix Dynamic Agent:** `ADAPTER_READY / CONTAINER_PENDING`. Python adapter implemented, but relies on a Docker Linux daemon not available in the current host environment. Graceful fallback active.
+- **PyRIT:** `ADAPTER_READY / SIMULATED_HARNESS`. Integrated with synthetic mocking; upstream Azure OpenAI / LLM credentials not configured.
+- **SkillSpector (NVIDIA):** `ADAPTER_READY / SYNTHETIC_ONLY`. Evaluated for tool manifest security; NVIDIA container pipeline not deployed.
+
+---
+
+## 5. Next Steps for Researcher
+
+1. **Do not execute `bb h1 approve` on Moneybird:** Moneybird is confirmed as an unpaid VDP (\$0 historical payouts).
+2. **Review Paid Target Candidates:** Evaluate **Basecamp** or **GitLab** as our primary paid bounty mission.
+3. **Reuse Differential Plan:** The BOLA differential specification defined above will serve as the exact technical template for testing object isolation in Basecamp or our selected paid target.
