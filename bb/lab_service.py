@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 
 LAB_DIR = Path("E:/IDEAS/Bounty Hunter/owasp-lab")
 PID_FILE = DATA / "owasp_lab.pid"
-HEALTH_URL = "http://127.0.0.1:8000/api/lab/catalog"
+HEALTH_URL = "http://127.0.0.1:8000/health"
+CATALOG_URL = "http://127.0.0.1:8000/api/lab/catalog"
 
 
 def is_port_in_use(port: int = 8000) -> bool:
@@ -31,15 +32,38 @@ def is_port_in_use(port: int = 8000) -> bool:
 
 
 def probe_lab_service(timeout: float = 2.0) -> Tuple[bool, Dict[str, Any]]:
-    """Probe whether the service on port 8000 is genuinely the OWASP Security Practice Lab."""
+    """Probe whether the service on port 8000 is genuinely the OWASP Security Practice Lab.
+    
+    Checks canonical /health endpoint first. If /health returns 404 (e.g. running older
+    in-memory build before route registration), falls back to verifying /api/lab/catalog
+    or /api/secure/echo to recognize an active healthy lab without classifying 404 as
+    startup failure or killing the healthy daemon.
+    """
+    # 1. Primary canonical health endpoint check: GET /health
     try:
         req = urllib.request.Request(HEALTH_URL, headers={"User-Agent": "BountyBot-ServiceManager/1.0"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))
                 return True, data
+    except urllib.error.HTTPError as e:
+        # If /health returns 404, the server IS up and responding to HTTP requests!
+        # Do not treat HTTP 404 as server down or startup failure.
+        pass
+    except Exception:
+        # Connection refused, timeout, or unreachable
+        return False, {}
+
+    # 2. Secondary fallback probe for OWASP Lab catalog or active application routes
+    try:
+        req = urllib.request.Request(CATALOG_URL, headers={"User-Agent": "BountyBot-ServiceManager/1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                return True, data
     except Exception:
         pass
+
     return False, {}
 
 
