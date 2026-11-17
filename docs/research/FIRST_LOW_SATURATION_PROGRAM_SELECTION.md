@@ -1,73 +1,62 @@
-# BOUNTY HUNTER — FIRST LOW-SATURATION PROGRAM QUALIFICATION: MONEYBIRD
+# BOUNTY HUNTER — LOW-SATURATION PROGRAM QUALIFICATION & SELECTION
 
-**Date:** 2026-11-16  
-**Investigated Program:** Moneybird (`moneybird`)  
-**HackerOne URL:** `https://hackerone.com/moneybird`  
-**Policy Hash:** `5a4c1bc3e7f60435ab99a5ca7076f68633eaa7c6d557dc35bc1c9544951673ed`  
-**Scope Fingerprint:** `8bb8ec06e0159873`  
-**Current Qualification Status:** **`BLOCKED_NO_MONETARY_BOUNTY`** (Unpaid VDP / Discretionary Token Only)
+**Date:** 2026-11-17  
+**Current Selected Primary Target:** **PortSwigger Web Security (`portswigger`)**  
+**HackerOne URL:** `https://hackerone.com/portswigger`  
+**Qualification Status:** **`QUALIFIED_ACTIVE_PAYING_TARGET`** (Low Saturation, 100% Efficiency, Cash Tiers Active)
 
 ---
 
-## 1. Candidate Comparison & Bounty Eligibility Audit
+## 1. Candidate Evolution & Qualification Audit Trail
 
-To ensure Bounty Hunter's first live research target offers authentic monetary compensation, candidate programs were re-qualified using direct authenticated HackerOne REST API and GraphQL telemetry:
-
-| Program Handle | Company / Product Domain | HexBrain Disclosures | HexBrain Total Paid | HackerOne Bounty Grid (`bounty_table`) | Public Saturation | Final Qualification Status |
-| :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **moneybird** | Cloud Accounting & Invoicing | **27** | **\$0 (0 paid)** | **`null` (No table)** | **Low** | **`BLOCKED_NO_MONETARY_BOUNTY`** |
-| **basecamp** | Project Management & Team Chat | 57 | **\$53,629** | **Active Published Grid** | Moderate | **TOP RECOMMENDED PAID TARGET** |
-| **greenhouse** | Enterprise Recruiting & ATS | 13 | **\$100** | Discretionary / Minimal | Low-Mod | Secondary / Discretionary |
-| **gitlab** | DevOps Platform | 800+ | **\$1,200,000+** | Active Tiered Grid | Very High | High Competition |
-| **airtable** | Cloud Relational Database | 0 (Public) | Unknown (Private) | N/A (Private Program) | High (Private) | Blocked (Private Scope) |
+| Investigation Phase | Candidate Program | HackerOne Handle | Key Metric / Reason | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **Initial Audit** | **Moneybird** | `moneybird` | 27 disclosed reports with \$0 cash bounties; `bounty_table: null`; Dutch NCSC disclosure model. | **`DISQUALIFIED_UNPAID_VDP`** |
+| **Early Recommendation** | **Basecamp** | `basecamp` | Live H1 telemetry revealed **500 reports received in last 90 days** and **457 thanked hackers**. High crowd saturation. | **`SUPERSEDED_HIGH_SATURATION`** |
+| **Deep Discovery** | **Mapbox** | `mapbox` | Exceptional saturation (only 2 reports in 90 days), BUT live HackerOne audit revealed **`submission_state: paused`**. Submissions currently disabled. | **`DISQUALIFIED_SUBMISSIONS_PAUSED`** |
+| **Recalibrated Winner** | **PortSwigger** | `portswigger` | **90 reports in 90 days**; **122 thanked hackers**; **100% response efficiency**; **Documented cash tiers: \$15k Critical, \$5k High, \$1k Medium**. Open submission state. | **`SELECTED_FIRST_TARGET`** |
 
 ---
 
-## 2. Resolution of the Moneybird Bounty Discrepancy
+## 2. Telemetry Comparison of Evaluated Targets
 
-An external indexer reports Moneybird as "VDP / No Bounty". Conversely, HackerOne's automated API endpoint returns `offers_bounties: true`. Our deep API audit resolves this conflict:
+Candidate programs were evaluated using authenticated HackerOne GraphQL and REST endpoints:
 
-1. **HackerOne API Metadata:**
-   - `offers_bounties: true`: The organization has bounty capabilities enabled at the platform contract level.
-   - `bounty_table: null`: Moneybird has **not** published any structured severity reward tiers.
-   - `average_bounty_lower_amount: 50` / `average_bounty_upper_amount: 50`: Indicates rare historical nominal tokens ($50) or swag, but no standard monetary bounty scale.
-2. **Official Policy Text:**
-   - Moneybird explicitly follows the Dutch NCSC Responsible Disclosure standard: *"In the public information concerning the problem reported, we will give your name as the discoverer of the problem..."* The policy guarantees legal safe harbor and Hall of Fame attribution, but explicitly omits monetary compensation.
-3. **HexBrain Empirical Proof:**
-   - Out of 27 historically resolved and publicly disclosed reports, **zero reports received cash bounties** (`bounties_usd: 0`).
-
-**Verdict:** Moneybird is an unpaid Vulnerability Disclosure Program (VDP). It is disqualified as our first target for earning monetary bounties.
-
----
-
-## 3. Official HackerOne Scope & Asset Integrity
-
-While disqualified for paid research, Moneybird's attack surface was verified as technically sound for permission and access control benchmarking:
-
-### 3.1 Policy Fingerprint
-- **Policy Hash (SHA-256):** `5a4c1bc3e7f60435ab99a5ca7076f68633eaa7c6d557dc35bc1c9544951673ed`
-- **Scope Fingerprint:** `8bb8ec06e0159873`
-- **Last Verified:** 2026-11-16T14:19:09Z (Authenticated Live API)
-
-### 3.2 In-Scope Assets
-1. `moneybird.com` (Main web application and REST API)
-2. `moneybirdstorage.com` (Attachment and document storage)
-3. `com.moneybird.Moneybird` (Apple Store App ID)
-4. `com.moneybird.android` (Google Play App ID)
-
-### 3.3 Scope Note on Developer Endpoints
-- `developer.moneybird.com` is a static documentation host.
-- The actual API endpoints are hosted directly on `https://moneybird.com/api/v2/{administration_id}/...`, which is explicitly within the authorized `moneybird.com` scope boundary.
+| Program Handle | State | Submission State | 90d Reports ($V_{90}$) | Hackers Thanked ($H_T$) | Total Resolved | Average Bounty | Response Efficiency | Relative Saturation | Final Research Verdict |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| **`portswigger`** | `public_mode` | `open` | **90** | **122** | **120** | **\$350-\$400** | **100%** | **`LOW`** | **PRIMARY TARGET: Optimal low-saturation paying target.** |
+| **`greenhouse`** | `public_mode` | `open` | 86 | 416 | 251 | \$100-\$250 | 89% | `LOW` | **RUNNER-UP: Solid enterprise recruiting SaaS.** |
+| **`wealthsimple`** | `public_mode` | `open` | 118 | 184 | 267 | \$500-\$500 | 88% | `LOW` | **STRONG FINTECH: High average bounty, stricter KYC.** |
+| **`kayak`** | `public_mode` | `open` | 110 | 266 | 546 | \$200-\$250 | 86% | `LOW` | **CONSUMER TECH: Large endpoint volume, lower triage speed.** |
+| **`priceline`** | `public_mode` | `open` | 162 | 324 | 643 | \$250-\$250 | 80% | `LOW` | **ACCEPTABLE: Good scope, lower response efficiency.** |
+| **`basecamp`** | `public_mode` | `open` | 500 | 457 | 632 | \$250-\$328 | 97% | `HIGH` | **SUPERSEDED: High crowd competition (5.5 reports/day).** |
+| **`mapbox`** | `public_mode` | `paused` | 2 | 308 | 460 | \$300-\$500 | 100% | `VERY_LOW` | **DISQUALIFIED: Submissions currently paused by program.** |
+| **`moneybird`** | `public_mode` | `open` | 58 | 308 | 211 | \$50-\$50 | 72% | `LOW` | **DISQUALIFIED: Unpaid VDP (`bounty_table: null`, \$0 cash).** |
+| **`supabase`** | `public_mode` | `open` | 249 | 231 | 191 | \$0 (None) | 71% | `MODERATE`| **DISQUALIFIED: Unpaid VDP (`offers_bounties: false`).** |
+| **`cloudflare`** | `public_mode` | `open` | 1,445 | 1,059 | 444 | \$250-\$350 | 87% | `VERY_HIGH`| **DISQUALIFIED: Extreme crowd noise (16+ reports/day).** |
+| **`vercel`** | `public_mode` | `open` | 4,839 | 345 | 358 | \$1198-\$1500 | 95% | `VERY_HIGH`| **DISQUALIFIED: Extreme noise (53+ reports/day).** |
 
 ---
 
-## 4. Final Strategic Recommendation
+## 3. PortSwigger Scope & Policy Summary
 
-1. **Gate Enforcement:**
-   - Moneybird is formally classified as **`BLOCKED_NO_MONETARY_BOUNTY`**.
-   - No approval command (`bb h1 approve`) will be executed against Moneybird for paid bounty hunting.
-2. **First Paid Target Recommendation:**
-   - If the user's primary goal is **earning our first monetary reward**, the platform recommends pivoting to **Basecamp (`basecamp`)**:
-     - Verified monetary payouts: **\$53,629** awarded across 57 reports.
-     - Manageable competition with low-to-moderate saturation.
-     - Transparent, documented bounty tiers.
+PortSwigger publishes transparent, documented bounty tiers in their HackerOne policy:
+
+### 3.1 Bounty Tiers
+- **Critical (\$15,000):** SQLi on `portswigger.net`, cross-tenant Burp Collaborator interaction access, cross-tenant AI interaction log retrieval with no user interaction, unauthenticated RCE on Burp Suite DAST, complete authentication bypass.
+- **High (\$5,000):** Stored XSS on `portswigger.net` or Burp Suite Enterprise web UI, path traversal, untrusted project file RCE.
+- **Medium (\$1,000):** Local file retrieval via web context, cross-domain sitemap leakage, Collaborator key extraction, exploitable reflected XSS, critical CSRF.
+- **Low / Unlikely Interaction (\$100 – \$1,000):** CSP bypass via trusted domain/JSONP, header injection, open redirect.
+
+### 3.2 Key In-Scope Assets
+- `id.portswigger.net` (Single Sign-On / Identity Broker — Max Severity: Critical)
+- `portswigger.net` (Customer portal, license store, accounts — Max Severity: Critical)
+- `ai.portswigger.net` (AI assistant services & prompt logs — Max Severity: Critical)
+- `collections.portswigger.net`, `links.portswigger.net`, `share.portswigger.net` (Asset sharing — Max Severity: Critical)
+- `Burp Suite DAST` (Enterprise Web Application — Max Severity: Critical)
+
+### 3.3 Strict Testing Rules
+- Rate limit strictly capped at **$\le 1$ request per second**.
+- Automated vulnerability scanner spam is strictly forbidden and rejected.
+- No DoS, no subdomain brute forcing.
+- Testing strictly confined to researcher-owned accounts.
