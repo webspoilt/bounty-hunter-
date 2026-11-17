@@ -2096,6 +2096,10 @@ def cmd_engines(args) -> int:
             print(f"Issues:       {', '.join(avail.issues)}")
         print()
         return 0
+    elif action == "install":
+        from bb.engines.installer import install_tools
+        target_tool = getattr(args, "tool", None)
+        return install_tools(tool_name=target_tool)
     print(f"Unknown engine action: {action}")
     return 1
 
@@ -2922,6 +2926,10 @@ def build_parser() -> argparse.ArgumentParser:
     eng_info = eng_sub.add_parser("info", help="display detailed metadata for a registered engine")
     eng_info.add_argument("engine_name", help="name of the engine (e.g. strix, trivy, pyrit)")
     eng_info.set_defaults(func=cmd_engines)
+
+    eng_install = eng_sub.add_parser("install", help="automatically install or update external security tools and binaries")
+    eng_install.add_argument("--tool", help="specific tool to install (nuclei, trivy, dalfox, trufflehog, subfinder, katana)")
+    eng_install.set_defaults(func=cmd_engines)
 
     # Burp Suite Engine Integration Commands
     eng_burp = eng_sub.add_parser("burp", help="PortSwigger Burp Suite Community & Professional integration")

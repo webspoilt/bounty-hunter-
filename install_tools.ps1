@@ -2,12 +2,13 @@
 .SYNOPSIS
     Bounty Hunter 2.6.0 - Automated Tool and Dependency Installer for Windows PowerShell.
 .DESCRIPTION
-    Installs Python dependencies, registers the `bb` CLI, and checks or installs external security tools.
+    Installs Python dependencies, registers the `bb` CLI, and automatically installs
+    external security engines (Nuclei, Trivy, TruffleHog, DalFox, Subfinder, Katana).
 #>
 
 [CmdletBinding()]
 param(
-    [switch]$InstallBinaries = $false
+    [switch]$SkipBinaries = $false
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,36 +39,19 @@ python -m pip install -r requirements.txt
 Write-Host "[*] Registering Bounty Hunter (bb) in editable mode..." -ForegroundColor Yellow
 python -m pip install -e .
 
-# 5. Optional binary installations via winget
-if ($InstallBinaries) {
-    Write-Host "[*] Checking winget for external security engines..." -ForegroundColor Yellow
-    $tools = @(
-        @{ Name = "Nuclei"; Id = "ProjectDiscovery.Nuclei" },
-        @{ Name = "Trivy"; Id = "AquaSecurity.Trivy" },
-        @{ Name = "TruffleHog"; Id = "TruffleSecurity.TruffleHog" }
-    )
-
-    foreach ($tool in $tools) {
-        Write-Host "Checking $($tool.Name)..." -NoNewline
-        if (Get-Command $tool.Name.ToLower() -ErrorAction SilentlyContinue) {
-            Write-Host " [Installed]" -ForegroundColor Green
-        } else {
-            Write-Host " [Missing] - Attempting winget install..." -ForegroundColor Yellow
-            try {
-                winget install --id $tool.Id -e --silent --accept-source-agreements --accept-package-agreements
-            } catch {
-                Write-Warning "Could not automatically install $($tool.Name) via winget."
-            }
-        }
-    }
+# 5. External binary installations
+if (-not $SkipBinaries) {
+    Write-Host ""
+    Write-Host "[*] Installing and configuring external security engines..." -ForegroundColor Yellow
+    python -m bb.cli engines install
 }
 
 # 6. Verify engines status
 Write-Host ""
-Write-Host "[*] Integrated Engines Status:" -ForegroundColor Cyan
+Write-Host "[*] Integrated Engines Operational Status:" -ForegroundColor Cyan
 python -m bb.cli engines list
 
 Write-Host ""
 Write-Host "=====================================================================" -ForegroundColor Green
-Write-Host " [+] Installation verified! You can now run: bb --help" -ForegroundColor Green
+Write-Host " [+] Installation complete and verified! You can now run: bb --help" -ForegroundColor Green
 Write-Host "=====================================================================" -ForegroundColor Green

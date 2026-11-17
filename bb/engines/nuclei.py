@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from bb.config import DATA_DIR
+from bb.config import DATA_DIR, PROJECT_ROOT
 from bb.engines.base import (
     BaseEngine,
     EngineAvailability,
@@ -96,6 +96,16 @@ class NucleiEngine(BaseEngine):
         if self._cached_avail is not None:
             return self._cached_avail
         binary = shutil.which("nuclei") or shutil.which("nuclei.exe")
+        if not binary:
+            for cand in [
+                PROJECT_ROOT / "tools" / "nuclei" / "nuclei.exe",
+                PROJECT_ROOT / "tools" / "nuclei" / "nuclei",
+                PROJECT_ROOT.parent / "tools" / "nuclei" / "nuclei.exe",
+                PROJECT_ROOT.parent / "tools" / "nuclei" / "nuclei",
+            ]:
+                if cand.exists():
+                    binary = str(cand)
+                    break
         if binary:
             try:
                 proc = subprocess.run([binary, "-version"], capture_output=True, text=True,

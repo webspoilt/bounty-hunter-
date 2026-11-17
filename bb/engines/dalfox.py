@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from bb.config import DATA_DIR
+from bb.config import DATA_DIR, PROJECT_ROOT
 from bb.engines.base import (
     BaseEngine,
     EngineAvailability,
@@ -71,6 +71,16 @@ class DalfoxEngine(BaseEngine):
         if self._cached_avail is not None:
             return self._cached_avail
         binary = shutil.which("dalfox") or shutil.which("dalfox.exe")
+        if not binary:
+            for cand in [
+                PROJECT_ROOT / "tools" / "dalfox" / "dalfox.exe",
+                PROJECT_ROOT / "tools" / "dalfox" / "dalfox",
+                PROJECT_ROOT.parent / "tools" / "dalfox" / "dalfox.exe",
+                PROJECT_ROOT.parent / "tools" / "dalfox" / "dalfox",
+            ]:
+                if cand.exists():
+                    binary = str(cand)
+                    break
         if binary:
             try:
                 proc = subprocess.run([binary, "version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3)

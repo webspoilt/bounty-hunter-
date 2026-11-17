@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from bb.config import DATA_DIR
+from bb.config import DATA_DIR, PROJECT_ROOT
 from bb.engines.base import (
     BaseEngine,
     EngineAvailability,
@@ -39,10 +39,7 @@ class TrivyEngine(BaseEngine):
     def __init__(self):
         self._work_dir = DATA_DIR / "trivy"
         self._work_dir.mkdir(parents=True, exist_ok=True)
-        self._custom_bin = os.environ.get(
-            "TRIVY_BIN_PATH",
-            r"E:\IDEAS\Bounty Hunter\tools\trivy\trivy.exe"
-        )
+        self._custom_bin = os.environ.get("TRIVY_BIN_PATH")
         self._cached_avail: EngineAvailability | None = None
 
     @property
@@ -71,9 +68,21 @@ class TrivyEngine(BaseEngine):
         return "https://github.com/aquasecurity/trivy"
 
     def _get_bin_path(self) -> str | None:
-        if os.path.exists(self._custom_bin):
+        if self._custom_bin and os.path.exists(self._custom_bin):
             return self._custom_bin
-        return shutil.which("trivy") or shutil.which("trivy.exe")
+        bin_path = shutil.which("trivy") or shutil.which("trivy.exe")
+        if bin_path:
+            return bin_path
+        candidates = [
+            PROJECT_ROOT / "tools" / "trivy" / "trivy.exe",
+            PROJECT_ROOT / "tools" / "trivy" / "trivy",
+            PROJECT_ROOT.parent / "tools" / "trivy" / "trivy.exe",
+            PROJECT_ROOT.parent / "tools" / "trivy" / "trivy",
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return None
 
     def check_availability(self) -> EngineAvailability:
         if self._cached_avail is not None:

@@ -42,40 +42,23 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 5. Verify CLI works
+:: 5. Install external binary security engines
 echo.
-echo [*] Verifying Bounty Hunter installation...
-python -m bb.cli --help >nul 2>&1
+echo [*] Installing and configuring external security engines (Nuclei, Trivy, TruffleHog, DalFox, Subfinder, Katana)...
+python -m bb.cli engines install
 if errorlevel 1 (
-    echo [WARNING] Could not invoke bb module directly.
-) else (
-    echo [+] Bounty Hunter CLI successfully verified!
+    echo [WARNING] Some external tools could not be automatically downloaded.
 )
 
-:: 6. Check external binary security engines
+:: 6. Verify CLI & engine status
 echo.
-echo [*] Checking availability of integrated security engines...
+echo [*] Checking operational status of all integrated security engines...
 python -m bb.cli engines list
 
 echo.
 echo =====================================================================
-echo  Optional External Tools Installation Guide:
-echo =====================================================================
-echo   To install additional binary engines:
-echo.
-echo   - Nuclei:     winget install ProjectDiscovery.Nuclei
-echo                 or: go install -v github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
-echo.
-echo   - DalFox:     go install github.com/hahwul/dalfox/v2@latest
-echo.
-echo   - Trivy:      winget install AquaSecurity.Trivy
-echo.
-echo   - TruffleHog: winget install TruffleSecurity.TruffleHog
-echo.
-echo   - Burp Suite: Download Community from https://portswigger.net/burp
-echo.
-echo =====================================================================
-echo [+] Setup complete! You can now run: bb --help
+echo  [+] Setup complete! Bounty Hunter and all tools are ready.
+echo  Run: bb --help
 echo =====================================================================
 echo.
 pause

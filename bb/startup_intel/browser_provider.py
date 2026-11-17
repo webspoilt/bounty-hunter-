@@ -47,10 +47,23 @@ class ObscuraBrowserProvider(BrowserProvider):
     """
 
     def __init__(self, binary_path: Optional[str] = None):
-        default_path = os.environ.get(
-            "OBSCURA_BIN_PATH",
-            r"E:\IDEAS\Bounty Hunter\tools\obscura\obscura.exe"
-        )
+        from bb.config import PROJECT_ROOT
+        import shutil
+        default_path = os.environ.get("OBSCURA_BIN_PATH")
+        if not default_path:
+            candidates = [
+                PROJECT_ROOT / "tools" / "obscura" / "obscura.exe",
+                PROJECT_ROOT / "tools" / "obscura" / "obscura",
+                PROJECT_ROOT.parent / "tools" / "obscura" / "obscura.exe",
+                PROJECT_ROOT.parent / "tools" / "obscura" / "obscura",
+            ]
+            for c in candidates:
+                if c.exists():
+                    default_path = str(c)
+                    break
+            if not default_path:
+                default_path = shutil.which("obscura") or shutil.which("obscura.exe") or ""
+
         self.binary_path = binary_path or default_path
         self._verify_installation()
 

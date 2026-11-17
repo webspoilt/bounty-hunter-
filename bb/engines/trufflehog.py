@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from bb.config import DATA_DIR
+from bb.config import DATA_DIR, PROJECT_ROOT
 from bb.engines.base import (
     BaseEngine,
     EngineAvailability,
@@ -38,10 +38,7 @@ class TruffleHogEngine(BaseEngine):
     def __init__(self):
         self._work_dir = DATA_DIR / "trufflehog"
         self._work_dir.mkdir(parents=True, exist_ok=True)
-        self._custom_bin = os.environ.get(
-            "TRUFFLEHOG_BIN_PATH",
-            r"E:\IDEAS\Bounty Hunter\tools\trufflehog\trufflehog.exe"
-        )
+        self._custom_bin = os.environ.get("TRUFFLEHOG_BIN_PATH")
         self._cached_avail: EngineAvailability | None = None
 
     @property
@@ -70,9 +67,21 @@ class TruffleHogEngine(BaseEngine):
         return "https://github.com/trufflesecurity/trufflehog"
 
     def _get_bin_path(self) -> str | None:
-        if os.path.exists(self._custom_bin):
+        if self._custom_bin and os.path.exists(self._custom_bin):
             return self._custom_bin
-        return shutil.which("trufflehog") or shutil.which("trufflehog.exe")
+        bin_path = shutil.which("trufflehog") or shutil.which("trufflehog.exe")
+        if bin_path:
+            return bin_path
+        candidates = [
+            PROJECT_ROOT / "tools" / "trufflehog" / "trufflehog.exe",
+            PROJECT_ROOT / "tools" / "trufflehog" / "trufflehog",
+            PROJECT_ROOT.parent / "tools" / "trufflehog" / "trufflehog.exe",
+            PROJECT_ROOT.parent / "tools" / "trufflehog" / "trufflehog",
+        ]
+        for c in candidates:
+            if c.exists():
+                return str(c)
+        return None
 
     def check_availability(self) -> EngineAvailability:
         if self._cached_avail is not None:
