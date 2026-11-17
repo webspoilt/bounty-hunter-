@@ -98,7 +98,8 @@ class NucleiEngine(BaseEngine):
         binary = shutil.which("nuclei") or shutil.which("nuclei.exe")
         if binary:
             try:
-                proc = subprocess.run([binary, "-version"], capture_output=True, text=True, timeout=3)
+                proc = subprocess.run([binary, "-version"], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=3)
                 combined = (proc.stdout or "") + (proc.stderr or "")
                 m = re.search(r"v\d+\.\d+\.\d+", combined)
                 version_str = m.group(0) if m else "v3.11.1"
@@ -195,6 +196,8 @@ class NucleiEngine(BaseEngine):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=context.timeout_sec or self._timeout_sec,
             )
             duration = time.time() - start_time

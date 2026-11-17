@@ -472,6 +472,20 @@ class Store:
         self.conn.commit()
         return finding.id
 
+    def save_finding(self, finding_or_program, finding: Finding | None = None) -> str:
+        """Alias for add_finding supporting either (finding, run_id) or (program/run_id, finding)."""
+        if isinstance(finding_or_program, Finding):
+            return self.add_finding(finding_or_program, run_id=finding if isinstance(finding, str) else None)
+        if finding is not None:
+            if isinstance(finding_or_program, str):
+                finding.meta.setdefault("program", finding_or_program)
+                row = self.conn.execute("SELECT id FROM runs WHERE id=?", (finding_or_program,)).fetchone()
+                run_id = finding_or_program if row else None
+            else:
+                run_id = None
+            return self.add_finding(finding, run_id=run_id)
+        return self.add_finding(finding_or_program)
+
     def set_report_path(self, finding_id: str, path: str) -> None:
         self.conn.execute("UPDATE findings SET report_path=? WHERE id=?", (path, finding_id))
         self.conn.commit()

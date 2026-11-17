@@ -94,6 +94,8 @@ class TrivyEngine(BaseEngine):
                 [bin_path, "--version"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             v_str = "0.76.2"
@@ -163,6 +165,8 @@ class TrivyEngine(BaseEngine):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=context.timeout_sec or 120,
             )
             duration = time.time() - start_time

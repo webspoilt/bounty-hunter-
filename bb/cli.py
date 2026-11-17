@@ -7,11 +7,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from bb import __version__
 from bb.artex import Artex, ArtexError
 from bb.checks import CheckOptions
-from bb.config import (CBH, CBH_HOME, DATA, KB_PATH, accounts_path, ensure_dirs, scope_path)
+from bb.config import (CBH, CBH_HOME, DATA, KB_PATH, accounts_path, ensure_dirs, now_iso, scope_path)
 from bb.gate import ApprovalGate
 from bb.h1 import (
     BriefGenerator,
@@ -27,8 +28,8 @@ from bb.h1 import (
 )
 from bb.http import BudgetExceeded, ScopedClient
 from bb.killswitch import AbortRequested, active as kill_active
-from bb.llm import Ollama
-from bb.models import sev_rank
+from bb.llm import get_llm
+from bb.models import Finding, sev_rank
 from bb.pipeline import HuntConfig, hunt
 from bb.recon import Recon
 from bb.report import lint, novelty_note, polish, render_h1, write_report
@@ -257,7 +258,7 @@ def cmd_report(args) -> int:
         kb = None
     if args.llm:
         try:
-            polished = polish(finding, kb=kb, llm=Ollama())
+            polished = polish(finding, kb=kb, llm=get_llm())
             print("[llm] polished" if polished else "[llm] skipped (model unavailable or output rejected)")
         except Exception as exc:
             print(f"[llm] {exc}")
@@ -331,7 +332,7 @@ def cmd_hypothesize(args) -> int:
     for h in hits:
         print(f"  {h['score']:.3f}  {h['title'][:90]}")
     block = "\n---\n".join(f"[{h['title']}] {h['text'][:500]}" for h in hits)
-    llm = Ollama()
+    llm = get_llm()
     if not llm.available():
         print("\n(Ollama unavailable; showing raw precedent only)")
         return 0
@@ -656,8 +657,13 @@ def cmd_scenario(args) -> int:
             print("\nAll security invariants strictly enforced.")
 
         if res.verdict == ScenarioVerdict.VULNERABLE and getattr(args, "program", None):
-            # Save finding to central store
+            # Save finding to central store with proper run_id and metadata
             store = Store()
+            run_id = getattr(args, "run_id", None)
+            created_run = False
+            if not run_id:
+                run_id = store.start_run(program=args.program, target=target)
+                created_run = True
             finding = Finding(
                 title=f"[Business Logic] {sc.title}",
                 bug_class=sc.category,
@@ -668,9 +674,12 @@ def cmd_scenario(args) -> int:
                 summary=res.finding_summary,
                 impact=f"Stateful business-logic vulnerability violating {sc.cwe} ({sc.owasp_category}).",
                 remediation="Enforce state machine validations and authorization checks server-side.",
+                meta={"program": args.program, "scenario_id": sc.id},
             )
-            store.save_finding(args.program, finding)
-            print(f"\nFinding recorded in central store: {finding.id}")
+            store.add_finding(finding, run_id=run_id)
+            if created_run:
+                store.finish_run(run_id, meta={"verdict": res.verdict.value, "scenario_id": sc.id})
+            print(f"\nFinding recorded in central store: {finding.id} (run_id: {run_id})")
 
         return 0 if res.verdict == ScenarioVerdict.VULNERABLE else 0
 
@@ -701,7 +710,8 @@ def cmd_scenario(args) -> int:
     finding = result.get("finding")
     if finding:
         print(f"[{finding.severity.upper()}] {finding.id}  {finding.title}")
-        meta = store.get_finding(finding.id).meta if store.get_finding(finding.id) else {}
+        stored_f = store.get_finding(finding.id)
+        meta = stored_f.meta if stored_f else {}
         if meta.get("report_path"):
             print(f"report: {meta['report_path']}")
         if meta.get("queue_id"):
@@ -1042,16 +1052,55 @@ def cmd_h1(args) -> int:
             print("[!] Target testing refused under deterministic safety invariant.")
             return 1
 
+        # Check for stale scope fingerprint if brief was previously generated
+        brief_scope_fp = data.get("scope_fingerprint")
+        if brief_scope_fp and brief_scope_fp != scope.fingerprint:
+            print(f"[!] PROPOSED TARGET REJECTED: Scope fingerprint mismatch (brief={brief_scope_fp}, live={scope.fingerprint}).")
+            print("[!] Scope rules have changed since brief generation. Re-generate brief with `bb h1 brief`.")
+            return 1
+
+        # Check explicit scope conflicts
+        target_host = (urlsplit(target).hostname or target).lower()
+        conflicts = data.get("scope_conflicts") or []
+        for c in conflicts:
+            c_asset = (c if isinstance(c, str) else c.get("asset", "")).lower()
+            conflict_matches = False
+            if c_asset:
+                if c_asset == target_host:
+                    conflict_matches = True
+                elif c_asset.startswith("*.") and target_host.endswith(c_asset[1:]):
+                    conflict_matches = True
+                elif not c_asset.startswith("*.") and target_host.endswith("." + c_asset):
+                    conflict_matches = True
+            if conflict_matches:
+                print(f"[!] PROPOSED TARGET REJECTED: '{target}' has unresolved scope conflict ({c_asset}).")
+                print("[!] Subdomain targeting conflict exists under program policy rules.")
+                return 1
+
+        # Check path exclusions
+        target_path = urlsplit(target).path or "/"
+        path_exclusions = data.get("path_exclusions") or []
+        for excl in path_exclusions:
+            if not excl:
+                continue
+            excl_path = urlsplit(excl).path if "://" in str(excl) else str(excl)
+            if not excl_path.startswith("/"):
+                excl_path = "/" + excl_path
+            if excl_path == target_path or target_path.startswith(excl_path.rstrip("/") + "/"):
+                print(f"[!] PROPOSED TARGET REJECTED: Target path '{target_path}' matches excluded path '{excl}'.")
+                return 1
+
         # Check structured asset entries for UNKNOWN or INELIGIBLE submission status
         entries = data.get("structured_asset_entries") or []
         for e in entries:
             # Check if this asset entry directly matches the target host
             ident = e.get("identifier", "")
             if ident and ident in target:
-                if e.get("eligible_for_submission") == AssetEligibility.INELIGIBLE.value:
+                elig = str(e.get("eligible_for_submission", "")).upper()
+                if elig == AssetEligibility.INELIGIBLE.value:
                     print(f"[!] PROPOSED TARGET REJECTED: '{target}' is explicitly marked INELIGIBLE for submission.")
                     return 1
-                if e.get("eligible_for_submission") == AssetEligibility.UNKNOWN.value:
+                if elig == AssetEligibility.UNKNOWN.value:
                     print(f"[!] PROPOSED TARGET REJECTED: '{target}' has UNKNOWN submission eligibility.")
                     print("[!] Clarify eligibility with program security team before approving.")
                     return 1
@@ -1069,10 +1118,29 @@ def cmd_h1(args) -> int:
 
         # Save program profile for continuous research engine
         from bb.h1 import ProgramAuthorizationBrief
-        brief_obj = ProgramAuthorizationBrief(**data)
+        brief_obj = ProgramAuthorizationBrief.from_dict(data)
         profile = BriefGenerator.create_program_profile(brief_obj)
         profile_path = H1_PROGRAMS_DIR / f"{handle}_profile.json"
         atomic_write_json(profile_path, asdict(profile))
+
+        # Inject policy path exclusions into approved scope out_rules
+        from bb.scope import parse_rule
+        for excl in path_exclusions:
+            rule = parse_rule(excl)
+            if rule and rule not in scope.out_rules:
+                scope.out_rules.append(rule)
+
+        # Persist unresolved policy conflicts as explicit deny rules.
+        for conflict in conflicts:
+            asset = conflict if isinstance(conflict, str) else (
+                conflict.get("asset") or conflict.get("host") or ""
+            )
+            asset = str(asset).strip()
+            if not asset:
+                continue
+            rule = parse_rule(asset)
+            if rule and rule not in scope.out_rules:
+                scope.out_rules.append(rule)
 
         # Also save official scope file into data/scopes/
         scope_p = scope.save(scope_path(handle))
@@ -1095,7 +1163,7 @@ def cmd_h1(args) -> int:
         brief_file = H1_BRIEFS_DIR / f"{handle}_brief.json"
         if brief_file.exists():
             brief_data = json.loads(brief_file.read_text(encoding="utf-8"))
-            brief = ProgramAuthorizationBrief(**brief_data)
+            brief = ProgramAuthorizationBrief.from_dict(brief_data)
         else:
             brief = ProgramAuthorizationBrief(
                 handle=handle, program_name=handle, offers_bounties=True,
@@ -1143,25 +1211,25 @@ def cmd_h1(args) -> int:
 
     if action == "policy":
         from bb.h1_policy import GlobalH1PolicyProfile, VDG_METADATA, COC_METADATA
-        profile = GlobalH1PolicyProfile()
+        policy_profile = GlobalH1PolicyProfile()
         print("\n=== GLOBAL HACKERONE POLICY COMPLIANCE PROFILE ===")
-        print(f"Platform Request Rate Ceiling:  {profile.max_platform_rate_rps} req/sec (hard cap)")
-        print(f"Human-in-the-Loop Enforced:    {'YES (Mandatory)' if profile.require_human_in_the_loop else 'NO'}")
-        print(f"Autonomous Reporting Blocked:  {'YES (Mandatory)' if profile.prohibit_full_autonomy else 'NO'}")
+        print(f"Platform Request Rate Ceiling:  {policy_profile.max_platform_rate_rps} req/sec (hard cap)")
+        print(f"Human-in-the-Loop Enforced:    {'YES (Mandatory)' if policy_profile.require_human_in_the_loop else 'NO'}")
+        print(f"Autonomous Reporting Blocked:  {'YES (Mandatory)' if policy_profile.prohibit_full_autonomy else 'NO'}")
         print("\nOfficial Anchored Documents:")
-        print(f"  1. {profile.vdg.name} ({profile.vdg.version})")
-        print(f"     URL: {profile.vdg.original_url}")
-        print(f"     SHA-256: {profile.vdg.sha256}")
-        print(f"     Retrieved: {profile.vdg.retrieved_at}")
-        print(f"  2. {profile.coc.name} ({profile.coc.version})")
-        print(f"     URL: {profile.coc.original_url}")
-        print(f"     SHA-256: {profile.coc.sha256}")
-        print(f"     Retrieved: {profile.coc.retrieved_at}")
-        print(f"\nActive Structured Rules ({len(profile.active_rules)}):")
-        for r in profile.active_rules:
-            override_str = "Program Overridable" if r.can_program_override else "Universal Platform Floor"
-            print(f"  * [{r.rule_id}] {r.classification.value:<12} {r.section_heading} ({override_str})")
-            print(f"    Summary: {r.summary}")
+        print(f"  1. {policy_profile.vdg.name} ({policy_profile.vdg.version})")
+        print(f"     URL: {policy_profile.vdg.original_url}")
+        print(f"     SHA-256: {policy_profile.vdg.sha256}")
+        print(f"     Retrieved: {policy_profile.vdg.retrieved_at}")
+        print(f"  2. {policy_profile.coc.name} ({policy_profile.coc.version})")
+        print(f"     URL: {policy_profile.coc.original_url}")
+        print(f"     SHA-256: {policy_profile.coc.sha256}")
+        print(f"     Retrieved: {policy_profile.coc.retrieved_at}")
+        print(f"\nActive Structured Rules ({len(policy_profile.active_rules)}):")
+        for p_rule in policy_profile.active_rules:
+            override_str = "Program Overridable" if p_rule.can_program_override else "Universal Platform Floor"
+            print(f"  * [{p_rule.rule_id}] {p_rule.classification.value:<12} {p_rule.section_heading} ({override_str})")
+            print(f"    Summary: {p_rule.summary}")
         return 0
 
     print(f"[!] Unknown h1 action: {action}")
@@ -1199,7 +1267,14 @@ def cmd_auto(args) -> int:
         except Exception:
             pass
 
-    accounts = load_accounts(accounts_path(args.accounts)) if args.accounts else None
+    accounts = None
+    if getattr(args, "accounts", None):
+        acc_p = Path(args.accounts)
+        if not acc_p.exists():
+            acc_p = accounts_path(args.accounts)
+        if not acc_p.exists():
+            raise SystemExit(f"[!] Missing account configuration: '{args.accounts}' does not exist.")
+        accounts = load_accounts(acc_p)
     entries = args.entry
     if not entries:
         if approved_target:
@@ -1322,7 +1397,14 @@ def cmd_controller(args) -> int:
     if args.action == "run":
         _require_not_stopped()
         scope = _scope_or_die(args.program)
-        accounts = load_accounts(accounts_path(args.accounts)) if args.accounts else None
+        accounts = None
+    if getattr(args, "accounts", None):
+        acc_p = Path(args.accounts)
+        if not acc_p.exists():
+            acc_p = accounts_path(args.accounts)
+        if not acc_p.exists():
+            raise SystemExit(f"[!] Missing account configuration: '{args.accounts}' does not exist.")
+        accounts = load_accounts(acc_p)
         entries = args.entry or [f"https://{h}" for h in scope.apex_domains() if not h.startswith("*")]
         if not entries:
             raise SystemExit("no entry URLs found; supply via --entry https://target.com")
@@ -1560,8 +1642,8 @@ def cmd_waf(args) -> int:
     scope = _scope_or_die(args.program)
     client = ScopedClient(scope, proxy=args.proxy, dry_run=args.dry_run, tool="waf")
     print(f"[*] Probing parameter normalization resilience on {args.url} ...")
-    res = waf.probe_url(client, args.url, param=args.param)
-    print(waf.format_report(res))
+    res = waf.probe(client, args.url, param=args.param)
+    print(waf.format_probe(res))
     return 0
 
 
@@ -1580,7 +1662,7 @@ def cmd_authz(args) -> int:
     from bb.authz import AuthzInvestigationWorkflow
     from bb.http import RequestBudget
 
-    action = getattr(args, "authz_action", None)
+    action = getattr(args, "authz_action", None) or getattr(args, "action", None)
     if not action:
         print("usage: bb authz {plan,run,status} ...")
         return 1
@@ -1606,7 +1688,19 @@ def cmd_authz(args) -> int:
 
     _require_not_stopped()
     scope = _scope_or_die(args.program)
-    accounts = load_accounts(getattr(args, "accounts", None), args.program)
+    acc_target = getattr(args, "accounts", None)
+    acc_file = Path(acc_target) if acc_target else accounts_path(args.program)
+    if acc_file.exists():
+        accounts = load_accounts(acc_file)
+    else:
+        if action == "run":
+            raise SystemExit(
+                f"[!] Missing account configuration: '{acc_file}' does not exist.\n"
+                f"    Authenticated authorization assessments require at least two configured accounts.\n"
+                f"    Provide a valid accounts file via --accounts <path>."
+            )
+        print(f"[*] Note: No accounts file found at '{acc_file}'. Planning without account-role bindings.")
+        accounts = {"accounts": []}
     store = Store()
     budget = RequestBudget(rate=args.rate, max_requests=args.max_requests)
 
@@ -1852,18 +1946,18 @@ def cmd_agents(args) -> int:
         target = getattr(args, "target", None) or "http://127.0.0.1:8000"
         program = getattr(args, "program", None) or "owasp-lab"
 
-        ag = reg.get(agent_name) if agent_name else None
-        if not ag or ag.category != EngineCategory.AUTONOMOUS:
+        target_ag = reg.get(agent_name) if agent_name else None
+        if not target_ag or target_ag.category != EngineCategory.AUTONOMOUS:
             print(f"Error: Unknown or unsupported autonomous agent '{agent_name}'. Run 'bb agents list'.")
             return 1
 
-        print(f"\n[ORCHESTRATOR] Initializing restricted scope for agent '{ag.name}'...")
+        print(f"\n[ORCHESTRATOR] Initializing restricted scope for agent '{target_ag.name}'...")
         print(f"Target:       {target}")
         print(f"Rate Limit:   3.0 req/sec cap")
         print(f"Timeout:      300s")
 
         ctx = ExecutionContext(program=program, target=target, rate_limit=3.0, timeout_sec=300)
-        res = ag.execute(ctx)
+        res = target_ag.execute(ctx)
         print(f"\nExecution Finished: Exit Code {res.exit_code} (Duration: {res.duration_sec:.2f}s)")
         print(f"Captured Findings:  {len(res.findings)}")
         for f in res.findings:
@@ -1921,16 +2015,16 @@ def cmd_engines(args) -> int:
         if not eng_name:
             print("Specify an engine to configure. Example: bb engines configure shannon")
             return 1
-        eng = reg.get(eng_name)
-        if not eng:
+        cfg_eng = reg.get(eng_name)
+        if not cfg_eng:
             print(f"Engine '{eng_name}' not found.")
             return 1
-        print(f"\n[ENGINE CONFIGURATION: {eng.display_name.upper()}]")
-        print(f"Name:                {eng.name}")
-        print(f"Category:            {eng.category.value}")
-        print(f"Official Repo:       {eng.official_repository}")
-        print(f"License:             {eng.license}")
-        avail = eng.check_availability()
+        print(f"\n[ENGINE CONFIGURATION: {cfg_eng.display_name.upper()}]")
+        print(f"Name:                {cfg_eng.name}")
+        print(f"Category:            {cfg_eng.category.value}")
+        print(f"Official Repo:       {cfg_eng.official_repository}")
+        print(f"License:             {cfg_eng.license}")
+        avail = cfg_eng.check_availability()
         print(f"State:               {avail.state.value}")
         if avail.remediation_hint:
             print(f"\nSetup & Installation Guide:\n  {avail.remediation_hint}")
@@ -1983,19 +2077,19 @@ def cmd_engines(args) -> int:
         if not target_eng:
             print("Specify engine name (e.g. bb engines info strix)")
             return 1
-        eng = reg.get(target_eng)
-        if not eng:
+        info_eng = reg.get(target_eng)
+        if not info_eng:
             print(f"Engine '{target_eng}' not found.")
             return 1
-        avail = eng.check_availability()
-        print(f"\n=== ENGINE DETAILS: {eng.display_name.upper()} ===")
-        print(f"Name:         {eng.name}")
-        print(f"Category:     {eng.category.value}")
+        avail = info_eng.check_availability()
+        print(f"\n=== ENGINE DETAILS: {info_eng.display_name.upper()} ===")
+        print(f"Name:         {info_eng.name}")
+        print(f"Category:     {info_eng.category.value}")
         print(f"Version:      {avail.version}")
         print(f"State:        {avail.state.value}")
-        print(f"License:      {eng.license}")
-        print(f"Repository:   {eng.official_repository}")
-        print(f"Capabilities: {', '.join(eng.get_capabilities())}")
+        print(f"License:      {info_eng.license}")
+        print(f"Repository:   {info_eng.official_repository}")
+        print(f"Capabilities: {', '.join(info_eng.get_capabilities())}")
         if avail.binary_path:
             print(f"Binary Path:  {avail.binary_path}")
         if avail.issues:
@@ -2999,7 +3093,8 @@ def main(argv: list[str] | None = None) -> int:
     # Windows consoles default to cp1252; cbh and our own output use unicode markers.
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
     args = build_parser().parse_args(argv)

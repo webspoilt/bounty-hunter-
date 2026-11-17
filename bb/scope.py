@@ -25,7 +25,7 @@ import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from bb.config import now_iso
@@ -103,8 +103,8 @@ def resolve_host(host: str) -> tuple[str, ...]:
     ips: list[str] = []
     for info in infos:
         addr = info[4][0]
-        if addr and addr not in ips:
-            ips.append(addr)
+        if addr and str(addr) not in ips:
+            ips.append(str(addr))
     _dns_cache[host] = (now, tuple(ips))
     return tuple(ips)
 
@@ -155,7 +155,7 @@ def parse_rule(raw: str) -> Rule | None:
         if not parts.hostname:
             raise ValueError(f"scope rule without host: {raw!r}")
         host_raw = parts.hostname
-        path = parts.path or ""
+        path: str | None = parts.path or ""
         if path in ("", "/"):
             path = None
         if path and not path.startswith("/"):
@@ -170,9 +170,9 @@ def parse_rule(raw: str) -> Rule | None:
         net = ipaddress.ip_network(raw, strict=False)
         return Rule(raw=str(net), kind="cidr", host=str(net.network_address))
     hostpart, _, rest = raw.partition("/")
-    path = "/" + rest if rest else None
-    if path and "*" in path:
-        path = path.split("*")[0]
+    rule_path: str | None = "/" + rest if rest else None
+    if rule_path and "*" in rule_path:
+        rule_path = rule_path.split("*")[0]
     port = None
     if hostpart.startswith("["):                      # [::1]:3000
         host_raw, _, tail = hostpart[1:].partition("]")
@@ -186,14 +186,14 @@ def parse_rule(raw: str) -> Rule | None:
             host_raw = hostpart
     else:
         host_raw = hostpart
-    if "/" in raw and path is None:
-        path = None
+    if "/" in raw and rule_path is None:
+        rule_path = None
     if _is_ip(host_raw):
         return Rule(raw=host_raw, kind="ip", host=host_raw, port=port)
     wildcard = host_raw.startswith("*.")
     host = normalize_host(host_raw[2:] if wildcard else host_raw)
     return Rule(raw=raw, kind="wildcard" if wildcard else "domain",
-                host=host, port=port, path=path, wildcard=wildcard)
+                host=host, port=port, path=rule_path, wildcard=wildcard)
 
 
 @dataclass
@@ -350,10 +350,30 @@ class Scope:
         if any(r.raw == "*" for r in self.out_rules):
             return ScopeDecision(False, target, "out-of-scope rule '*' denies everything",
                                  host, port, path)
+        # Check for explicit (non-wildcard) in-scope match first — these take
+        # precedence over wildcard out-of-scope rules.  This handles the common
+        # HackerOne pattern where *.example.com is out-of-scope but specific
+        # subdomains like api.example.com are explicitly whitelisted.
+        explicit_in = None
+        for rule in self.in_rules:
+            if not rule.wildcard and rule.matches(host, port, path):
+                explicit_in = rule
+                break
+        # Non-wildcard out-of-scope rules always block (they are more specific
+        # than any in-scope entry).  Wildcard out-of-scope rules only block if
+        # there is no explicit (non-wildcard) in-scope override.
         for rule in self.out_rules:
-            if rule.raw != "*" and rule.matches(host, port, path):
+            if rule.raw == "*":
+                continue
+            if rule.matches(host, port, path):
+                if rule.wildcard and explicit_in is not None:
+                    # Explicit in-scope entry overrides wildcard exclusion
+                    continue
                 return ScopeDecision(False, target, f"explicit out-of-scope rule {rule.raw!r}",
                                      host, port, path)
+        if explicit_in is not None:
+            return ScopeDecision(True, target, f"matches in-scope rule {explicit_in.raw!r}",
+                                 host, port, path)
         for rule in self.in_rules:
             if rule.matches(host, port, path):
                 return ScopeDecision(True, target, f"matches in-scope rule {rule.raw!r}",
@@ -412,12 +432,25 @@ class Scope:
     def is_in_scope(self, target: str) -> bool:
         return self.check(target).allowed
 
+    def apex_domains(self) -> list[str]:
+        """Return non-wildcard, non-CIDR hostnames defined in in_rules."""
+        hosts: list[str] = []
+        for r in self.in_rules:
+            if not r.wildcard and r.kind not in ("cidr", "ip") and r.host and r.host != "*":
+                if r.host not in hosts:
+                    hosts.append(r.host)
+        return hosts
+
     def filter(self, targets: Iterable[str]) -> tuple[list[str], list[ScopeDecision]]:
-        ok, refused = [], []
+        ok: list[str] = []
+        refused: list[ScopeDecision] = []
         for t in targets:
             d = self.check(t)
-            (ok if d.allowed else refused).append(t if d.allowed else d)
-        return ok, refused  # type: ignore[return-value]
+            if d.allowed:
+                ok.append(t)
+            else:
+                refused.append(d)
+        return ok, refused
 
     def describe(self) -> str:
         lines = [f"program: {self.program}  (source={self.source}, imported={self.imported_at})",
@@ -445,13 +478,12 @@ def parse_target(target: str) -> tuple[str, int | None, str]:
         if not parts.hostname:
             raise ValueError("URL without host")
         host = normalize_host(parts.hostname)
-        port = parts.port or (443 if scheme == "https" else 80)
-        return host, port, parts.path or "/"
+        return host, parts.port or (443 if scheme == "https" else 80), parts.path or "/"
     if s.startswith("//"):
         s = s[2:]
-    hostpart, _, path = s.partition("/")
-    path = "/" + path if path else "/"
-    port = None
+    hostpart, _, path_str = s.partition("/")
+    path = "/" + path_str if path_str else "/"
+    port: int | None = None
     if hostpart.startswith("["):
         host_raw, _, tail = hostpart[1:].partition("]")
         if tail.startswith(":"):

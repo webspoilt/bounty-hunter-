@@ -5,8 +5,9 @@ import shutil
 
 import httpx
 
-from bb.config import ARTEX_TOKEN, ARTEX_URL, CBH, KB_PATH, OLLAMA, PENTAGI_URL
-from bb.llm import Ollama
+from bb.config import (ARTEX_TOKEN, ARTEX_URL, CBH, COARENA_BASE, COARENA_MODEL,
+                       KB_PATH, LLM_PROVIDER, OLLAMA, PENTAGI_URL)
+from bb.llm import Ollama, get_llm
 
 
 def probe_all() -> list[dict]:
@@ -16,6 +17,16 @@ def probe_all() -> list[dict]:
     models = ollama.models() if ollama.available() else []
     out.append({"name": "ollama", "ok": bool(models), "url": OLLAMA,
                 "detail": ", ".join(models) if models else "not reachable (bb report still works)"})
+
+    if LLM_PROVIDER in ("coarena", "openai"):
+        try:
+            hosted = get_llm()
+            ok = hosted.available()
+            detail = (f"{COARENA_MODEL} via coarena" if ok
+                      else "not reachable (check COARENA_API_KEY)")
+        except Exception as exc:
+            ok, detail = False, str(exc)
+        out.append({"name": "llm", "ok": ok, "url": COARENA_BASE, "detail": detail})
 
     try:
         from bb.kb import KnowledgeBase

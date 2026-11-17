@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 import yaml
 
 
@@ -19,7 +19,7 @@ class DraftRule:
     reviewed_at: Optional[float] = None
     reviewer: Optional[str] = None
     review_notes: str = ""
-    validation_results: Dict[str, any] = field(default_factory=dict)
+    validation_results: Dict[str, Any] = field(default_factory=dict)
 
 
 class RuleRegistry:

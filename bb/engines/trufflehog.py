@@ -93,6 +93,8 @@ class TruffleHogEngine(BaseEngine):
                 [bin_path, "--version"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             version = res.stdout.strip() or "3.99.9"
@@ -154,6 +156,8 @@ class TruffleHogEngine(BaseEngine):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=context.timeout_sec or 120,
             )
             duration = time.time() - start_time

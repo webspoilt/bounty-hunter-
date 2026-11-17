@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from bb.config import KB_PATH
-from bb.llm import Ollama, OllamaError
+from bb.llm import LLMProvider, OllamaError, get_llm
 
 
 def chunk_text(text: str, size: int = 900, overlap: int = 120) -> list[str]:
@@ -48,10 +48,10 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 class KnowledgeBase:
-    def __init__(self, path: str | Path = KB_PATH, llm: Ollama | None = None):
+    def __init__(self, path: str | Path = KB_PATH, llm: LLMProvider | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.llm = llm or Ollama()
+        self.llm = llm or get_llm()
         self.entries: list[dict[str, Any]] = []
         self._hashes: set[str] = set()
         if self.path.exists():

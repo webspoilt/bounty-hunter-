@@ -9,11 +9,16 @@ import re
 
 import httpx
 
-from bb.config import EMBED_MODEL, MODEL, OLLAMA
+from bb.config import (COARENA_API_KEY, COARENA_BASE, COARENA_MODEL,
+                       EMBED_MODEL, LLM_PROVIDER, MODEL, OLLAMA)
 
 
-class OllamaError(RuntimeError):
+class LLMError(RuntimeError):
     pass
+
+
+# historical name: callers still catch OllamaError
+OllamaError = LLMError
 
 
 class Ollama:
@@ -81,6 +86,107 @@ class Ollama:
     def json_reply(self, messages: list[dict], *, model: str | None = None) -> dict | None:
         text = self.chat(messages, model=model, temperature=0.1)
         return extract_json(text)
+
+
+class OpenAICompatible:
+    """Hosted OpenAI-compatible chat API (e.g. Coarena's free Model API).
+
+    The hosted endpoint has no embeddings route, so embeddings are delegated to
+    a local Ollama instance. The API key is sent only in the Authorization
+    header and is never written to logs or exception text.
+    """
+
+    def __init__(self, base: str = COARENA_BASE, api_key: str = COARENA_API_KEY,
+                 chat_model: str = COARENA_MODEL, timeout: float = 180.0,
+                 embed_fallback: "Ollama | None" = None):
+        self.base = base.rstrip("/")
+        self._api_key = api_key
+        self.chat_model = chat_model
+        self.timeout = timeout
+        self._embed_fallback = embed_fallback
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json"}
+
+    def available(self) -> bool:
+        if not self._api_key:
+            return False
+        try:
+            r = httpx.get(f"{self.base}/models", headers=self._headers(), timeout=5.0)
+            return r.status_code == 200
+        except Exception:
+            return False
+
+    def models(self) -> list[str]:
+        if not self._api_key:
+            return []
+        try:
+            r = httpx.get(f"{self.base}/models", headers=self._headers(), timeout=5.0)
+            r.raise_for_status()
+            return [m.get("id", "") for m in r.json().get("data", [])]
+        except Exception:
+            return []
+
+    def chat(self, messages: list[dict], *, model: str | None = None,
+             temperature: float = 0.2, timeout: float | None = None,
+             max_tokens: int | None = None, **_: object) -> str:
+        payload: dict = {
+            "model": model or self.chat_model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": False,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        last_err: Exception | None = None
+        for _ in range(2):
+            try:
+                r = httpx.post(f"{self.base}/chat/completions", json=payload,
+                               headers=self._headers(),
+                               timeout=timeout or self.timeout)
+                if r.status_code >= 400:
+                    try:
+                        detail = r.json().get("error", {}).get("message", "")
+                    except Exception:
+                        detail = ""
+                    raise LLMError(
+                        f"hosted chat failed: HTTP {r.status_code}"
+                        + (f": {detail}" if detail else ""))
+                choices = r.json().get("choices") or []
+                message = (choices[0].get("message") or {}) if choices else {}
+                return message.get("content") or ""
+            except LLMError:
+                raise                                   # API errors are not retried
+            except Exception as exc:                    # network/parse: one retry
+                last_err = exc
+        raise LLMError(f"hosted chat failed: {last_err}")
+
+    def embed(self, texts: list[str], *, model: str | None = None) -> list[list[float]]:
+        if not texts:
+            return []
+        if self._embed_fallback is None:
+            self._embed_fallback = Ollama(embed_model=model or EMBED_MODEL)
+        return self._embed_fallback.embed(texts, model=model)
+
+    def json_reply(self, messages: list[dict], *, model: str | None = None) -> dict | None:
+        text = self.chat(messages, model=model, temperature=0.1)
+        return extract_json(text)
+
+
+LLMProvider = Ollama | OpenAICompatible
+
+
+def get_llm(provider: str | None = None, **kwargs) -> "Ollama | OpenAICompatible":
+    """Return the configured chat client without changing any caller contract."""
+    chosen = (provider or LLM_PROVIDER or "ollama").strip().lower()
+    if chosen in ("coarena", "openai"):
+        if not COARENA_API_KEY:
+            raise LLMError("COARENA_API_KEY is not configured")
+        return OpenAICompatible(**kwargs)
+    if chosen == "ollama":
+        return Ollama(**kwargs)
+    raise LLMError(f"unknown LLM provider: {chosen}")
 
 
 def extract_json(text: str) -> dict | None:

@@ -308,6 +308,10 @@ class IntelligenceStore:
 
         return records[:limit]
 
+    def query_text(self, query: str, limit: int = 50) -> list[IntelligenceRecord]:
+        """Search records matching full-text query."""
+        return self.search(query=query, limit=limit)
+
     # --- Hypothesis Outcome Persistence ---
 
     def record_hypothesis_outcome(self, outcome: HypothesisOutcomeRecord) -> None:

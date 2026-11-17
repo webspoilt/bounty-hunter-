@@ -301,7 +301,9 @@ class LocalBenchmarkServer:
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0):
         self.server = HTTPServer((host, port), BenchmarkAppHandler)
-        self.host, self.port = self.server.server_address
+        addr = self.server.server_address
+        self.host = str(addr[0])
+        self.port = int(addr[1])
         self.base_url = f"http://{self.host}:{self.port}"
         self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 

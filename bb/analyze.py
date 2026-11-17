@@ -15,7 +15,7 @@ import json
 import re
 from urllib.parse import urlsplit
 
-from bb.llm import Ollama, OllamaError
+from bb.llm import LLMProvider, OllamaError, get_llm
 
 MAX_TESTS = 8
 MAX_BODY = 2500
@@ -206,12 +206,12 @@ def _validate(raw: dict, finding) -> dict | None:
             "next_tests": tests, "source": "ollama"}
 
 
-def analyze(finding, llm: Ollama | None = None, *, use_llm: bool = True) -> dict:
+def analyze(finding, llm: LLMProvider | None = None, *, use_llm: bool = True) -> dict:
     """Offline analysis + optional validated model pass. Never sends a request."""
     base = analyze_offline(finding)
     if not use_llm:
         return base
-    llm = llm or Ollama()
+    llm = llm or get_llm()
     if not llm.available():
         base["note"] = "Ollama unavailable; returned deterministic analysis"
         return base

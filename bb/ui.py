@@ -29,7 +29,7 @@ from bb import __version__, feedback, killswitch, learn, metrics
 from bb.burp_api import BurpApiClient
 from bb.burp_export import export_exchanges_to_burp_xml, export_finding_to_burp
 from bb.gate import ApprovalGate
-from bb.models import sev_rank
+from bb.models import Exchange, sev_rank
 from bb.store import Store
 
 DASHBOARD_HTML = """<!DOCTYPE html>

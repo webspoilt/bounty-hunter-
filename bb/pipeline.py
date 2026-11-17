@@ -195,8 +195,8 @@ def _report_and_queue(findings: list[Finding], cfg: HuntConfig, scope: Scope, st
     llm = None
     if cfg.llm:
         try:
-            from bb.llm import Ollama
-            llm = Ollama()
+            from bb.llm import get_llm
+            llm = get_llm()
             if llm.available():
                 log(f"  [llm] {llm.chat_model} available — polishing up to 6 reports")
             else:

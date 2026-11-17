@@ -72,6 +72,12 @@ OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 MODEL = os.environ.get("BB_MODEL", "freehuntx/qwen3-coder:8b")
 EMBED_MODEL = os.environ.get("BB_EMBED_MODEL", "nomic-embed-text")
 
+# Chat provider: "ollama" (local) or "coarena" (hosted OpenAI-compatible API).
+LLM_PROVIDER = os.environ.get("BB_LLM_PROVIDER", "ollama").strip().lower()
+COARENA_BASE = os.environ.get("COARENA_BASE_URL", "https://coarena.ai/api/v1")
+COARENA_API_KEY = os.environ.get("COARENA_API_KEY", "")
+COARENA_MODEL = os.environ.get("COARENA_MODEL", "gpt-6-luna")
+
 ARTEX_URL = os.environ.get("ARTEX_URL", "http://127.0.0.1:8787")
 ARTEX_TOKEN = os.environ.get("ARTEX_TOKEN", "")
 PENTAGI_URL = os.environ.get("PENTAGI_URL", "https://127.0.0.1:8443")

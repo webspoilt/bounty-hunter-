@@ -71,7 +71,7 @@ class SemgrepEngine(BaseEngine):
         binary = shutil.which("semgrep") or shutil.which("semgrep.exe")
         if binary:
             try:
-                proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=8)
+                proc = subprocess.run([binary, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=8)
                 lines = [l.strip() for l in (proc.stdout or proc.stderr).splitlines() if l.strip()]
                 version_str = lines[-1] if lines else "installed"
                 self._cached_avail = EngineAvailability(
@@ -174,6 +174,8 @@ class SemgrepEngine(BaseEngine):
                 cmd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=context.timeout_sec or 300,
             )
             duration = time.time() - start_time

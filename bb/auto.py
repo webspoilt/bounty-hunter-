@@ -171,7 +171,7 @@ class AutoHunter:
             m = ep.get("method", "GET") if isinstance(ep, dict) else "GET"
             if u:
                 template = normalize.normalize_path(u)
-                self.store.record_route(self.run_id, ep.get("host", ""), m, template, u, source="discovery")
+                self.store.record_route(self.run_id, u, method=m, source="discovery")
                 norm_count += 1
         self.log(f"      Indexed {norm_count} route templates in state store.")
 
@@ -193,20 +193,17 @@ class AutoHunter:
 
         # Phase 4: Swarm / Deterministic Checks & Differential Testing
         self.log("[4/7] Running investigation engine: checks, access controls & authorization...")
-        roles = []
-        if self.cfg.accounts:
-            try:
-                roles = login_roles(self.cfg.accounts, self.cfg.scope, proxy=self.cfg.proxy,
-                                    timeout=self.cfg.timeout, dry_run=self.cfg.dry_run,
-                                    store=self.store, run_id=self.run_id)
-                self.log(f"      Authenticated {len(roles)} role session(s) for differential testing.")
-            except Exception as exc:
-                self.log(f"      [!] Authentication warning: {exc}")
-
         client = ScopedClient(self.cfg.scope, proxy=self.cfg.proxy, timeout=self.cfg.timeout,
                               rate=self.cfg.rate, max_requests=self.cfg.max_requests,
                               dry_run=self.cfg.dry_run, store=self.store, run_id=self.run_id,
                               tool="auto_hunter", shared=budget)
+        roles = []
+        if self.cfg.accounts:
+            try:
+                roles = login_roles(client, self.cfg.accounts, log=self.log)
+                self.log(f"      Authenticated {len(roles)} role session(s) for differential testing.")
+            except Exception as exc:
+                self.log(f"      [!] Authentication warning: {exc}")
         checker = Checker(client, self.store, self.run_id, self.cfg.scope, roles=roles,
                           options=self.cfg.check_options, log=self.log)
         discovered_findings = checker.run_all(self.cfg.entry_urls, endpoints)

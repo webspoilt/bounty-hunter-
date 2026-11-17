@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from bb.programs.program_models import AIClassification, AIEvidenceRecord
 
 # Curated repository of documented public intelligence on software development methodologies
-PUBLIC_AI_DEVELOPMENT_EVIDENCE: Dict[str, Dict[str, any]] = {
+PUBLIC_AI_DEVELOPMENT_EVIDENCE: Dict[str, Dict[str, Any]] = {
     "cursor": {
         "classification": AIClassification.CONFIRMED_AI_BUILT,
         "description": "Anysphere explicitly builds and dogfoods Cursor editor using its own AI code-generation agents.",

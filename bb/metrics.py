@@ -7,6 +7,7 @@ as "no decision yet", never as a failure.
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import Any
 
 from bb.store import Store
 
@@ -22,7 +23,7 @@ def collect(store: Store, program: str | None = None) -> dict:
         lambda: {"findings": 0, "accepted": 0, "duplicate": 0, "minutes": 0.0, "bounty": 0.0})
     currencies: dict[str, float] = defaultdict(float)
 
-    totals = {"findings": len(rows), "accepted": 0, "duplicate": 0, "informative": 0,
+    totals: dict[str, Any] = {"findings": len(rows), "accepted": 0, "duplicate": 0, "informative": 0,
               "rejected": 0, "unknown": 0, "submitted": 0, "bounty": 0.0, "minutes": 0.0}
     for row in rows:
         status = row.get("status") or "unknown"

@@ -84,6 +84,8 @@ class RuleValidator:
                     [semgrep_bin, "--config", str(rule_file), str(vuln_file), "--json"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                 )
                 import json
@@ -95,6 +97,8 @@ class RuleValidator:
                     [semgrep_bin, "--config", str(rule_file), str(sec_file), "--json"],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=10,
                 )
                 out_s = json.loads(res_s.stdout or "{}")

@@ -31,10 +31,10 @@ from bb.intelligence.models import IntelligenceRecord, VersionConstraint
 try:
     from packaging.version import InvalidVersion, Version
 except ImportError:
-    class InvalidVersion(ValueError):
+    class InvalidVersion(ValueError):  # type: ignore[no-redef]
         pass
 
-    class Version:
+    class Version:  # type: ignore[no-redef]
         def __init__(self, vstring: str):
             self.vstring = str(vstring).strip()
             parts = re.findall(r"\d+", self.vstring)

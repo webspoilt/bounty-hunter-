@@ -215,3 +215,8 @@ def format_probe(result: dict) -> str:
 
 def to_json(result: dict) -> str:
     return json.dumps(result, indent=2)
+
+
+# Backwards compatibility aliases
+probe_url = probe
+format_report = format_probe

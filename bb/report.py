@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from bb.config import REPORTS, now_iso
-from bb.llm import Ollama, OllamaError, split_sections
+from bb.llm import LLMProvider, OllamaError, get_llm, split_sections
 from bb.models import Evidence, Exchange, Finding
 
 SEV_LABEL = {"info": "Informational", "low": "Low", "medium": "Medium",
@@ -114,9 +114,9 @@ SYSTEM = (
 )
 
 
-def polish(f: Finding, kb=None, llm: Ollama | None = None, log=print) -> dict:
+def polish(f: Finding, kb=None, llm: LLMProvider | None = None, log=print) -> dict:
     """Ask the local model to improve the narrative. Returns {} when unavailable/unusable."""
-    llm = llm or Ollama()
+    llm = llm or get_llm()
     if not llm.available():
         return {}
     context = ""

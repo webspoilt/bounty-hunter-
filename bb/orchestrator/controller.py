@@ -251,11 +251,8 @@ class Controller:
             # Authenticate roles if needed
             if self.cfg.accounts and not self.roles:
                 try:
-                    self.roles = login_roles(
-                        self.cfg.accounts, self.cfg.scope, proxy=self.cfg.proxy,
-                        timeout=self.cfg.timeout, dry_run=self.cfg.dry_run,
-                        store=self.store, run_id=self.run_id
-                    )
+                    auth_client = self._make_client("auth_login")
+                    self.roles = login_roles(auth_client, self.cfg.accounts, log=self.log)
                 except Exception as exc:
                     self.log(f"[!] Authentication warning: {exc}")
 

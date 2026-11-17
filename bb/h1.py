@@ -473,14 +473,13 @@ class ProgramDiscoveryRanker:
         rel = (prog.get("relationships") or {}).get("structured_scopes") or {}
         scope_data = rel.get("data")
         
+        scope_items: list[Any] = []
         if scope_data is None:
             scope_status = ScopeRetrievalStatus.NOT_LOADED
             asset_count = None
-            scope_items = []
         elif len(scope_data) == 0:
             scope_status = ScopeRetrievalStatus.LOADED_EMPTY
             asset_count = 0
-            scope_items = []
         else:
             scope_status = ScopeRetrievalStatus.LOADED_WITH_ASSETS
             asset_count = len(scope_data)
@@ -808,6 +807,14 @@ class ProgramAuthorizationBrief:
     approved_policy_hash: str = ""
     approved_scope_fingerprint: str = ""
     scope_fingerprint: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProgramAuthorizationBrief":
+        """Instantiate brief from dictionary, safely filtering unrecognized fields."""
+        from dataclasses import fields
+        valid_fields = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered)
 
     def render_markdown(self) -> str:
         bounty_str = "Yes (Paid Bounties)" if self.offers_bounties else "No (VDP / Points Only)"
@@ -1166,7 +1173,7 @@ class HackerOneReportGenerator:
 
 def submit_payload(finding: Finding, report_markdown: str, team_handle: str,
                    weakness_id: int = 0, structured_scope_id: int = 0) -> dict:
-    attrs = {
+    attrs: dict[str, Any] = {
         "team_handle": team_handle,
         "title": finding.title[:140],
         "vulnerability_information": report_markdown,

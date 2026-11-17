@@ -219,7 +219,7 @@ def cmd_intel_v2(args: argparse.Namespace) -> int:
             # Query HexBrain historical intelligence for program to extract recurring CWEs
             engine = HexBrainEngine()
             hist = engine.client.get_program_history(target_param)
-            recurring_cwes: List[str] = []
+            recurring_cwes: list[str] = []
             if hist and "by_class" in hist:
                 CLASS_TO_CWE = {
                     "Access Control": "CWE-639",
@@ -285,7 +285,7 @@ def cmd_intel_v2(args: argparse.Namespace) -> int:
 
     elif action == "triage":
         triager = FalsePositiveTriager(kb=kb)
-        res = triager.triage_finding(
+        assessment = triager.triage_finding(
             finding_id=args.finding_id or "CLI-FINDING",
             target_endpoint=args.endpoint or "http://target.local",
             vulnerability_type=args.vuln_type or "Generic Vulnerability",
@@ -293,10 +293,10 @@ def cmd_intel_v2(args: argparse.Namespace) -> int:
             cwe_id=args.cwe,
         )
         print("\n=== FALSE POSITIVE TRIAGE RESULT ===")
-        print(f"Verdict:            {res.verdict.value}")
-        print(f"Confidence:         {res.confidence * 100:.1f}%")
-        print(f"Rationale:          {res.rationale}")
-        print(f"Recommended Action: {res.recommended_action}")
+        print(f"Verdict:            {assessment.verdict.value}")
+        print(f"Confidence:         {assessment.confidence * 100:.1f}%")
+        print(f"Rationale:          {assessment.rationale}")
+        print(f"Recommended Action: {assessment.recommended_action}")
         return 0
 
     elif action == "dataset":
