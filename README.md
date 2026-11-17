@@ -460,16 +460,30 @@ it preserve facts and pass validation), not by blind review. (iv) Windows-only m
 CI covers Linux on two Python versions. (v) E12 records a synthetic outcome to exercise the
 metrics path; it is not a bounty, and none of these numbers are earnings.
 
-## 7 Â· Usage
+## 7 · Usage & Operator's Handbook
 
-### 7.1 Sixty-second demonstration
+> **Detailed Handbook:** See [`docs/OPERATOR_GUIDE_HOW_TO_HUNT.md`](docs/OPERATOR_GUIDE_HOW_TO_HUNT.md) for complete end-to-end instructions on installation, program discovery, Safe Harbor preflight, differential authorization testing, and reporting.
+
+### 7.1 Quickstart & Tool Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/webspoilt/bounty-hunter-.git
+cd bounty-hunter-
+
+# On Windows: run one-click installer (installs Python dependencies + external tools)
+install_tools.bat
+
+# On Linux / macOS:
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt && pip install -e .
+bb engines install
+```
+
+### 7.2 Sixty-second demonstration
 
 ```powershell
-cd "E:\IDEAS\new idea\bountybot"
-python -m venv .venv; .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
-
-bb integrations   # ollama Â· KB Â· cbh Â· ARTEX Â· PentAGI Â· Juice Shop
+bb integrations   # ollama · KB · cbh · ARTEX · PentAGI · Juice Shop
 bb demo
 ```
 
